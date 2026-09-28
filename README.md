@@ -112,9 +112,10 @@ dependencies from `pyproject.toml` instead, with Jx from PyPI.
 
 The wheel build (`hatch_build.py`) compiles the binary with `fpc`, or takes
 it from `$MINIJX_BINARY`, checks that its version and module format match
-the runtime's, and tags the wheel `py3-none-<platform>`. The version lives
-in `src/minijx/__init__.py` and `compiler/mjcodegen.pas`; both must change
-together.
+the runtime's, and tags the wheel `py3-none-<platform>`. The version is only
+written in `src/minijx/__init__.py`: the Makefile and the wheel build pass it
+to `fpc` in `$MINIJX_VERSION`. The `fpc` options are in
+`compiler/minijx.cfg`, which both use.
 
 `MINIJX_TEST_INSTALLED=1` makes the tests import the installed package
 instead of `src/`, to test a wheel. On a free-threaded Python, run the tests
@@ -242,7 +243,8 @@ The output is the same as Jx's, byte for byte:
 ## Layout
 
 ```
-compiler/       FreePascal sources (mjlexer, mjexpr, mjparser, mjcodegen, minijx.lpr)
+compiler/       FreePascal sources: mjlexer, mjparser, mjexpr (expression tree), mjdefs,
+                mjgen (Python functions), mjcompiler (modules), minijx.lpr
 src/minijx/     Python package: catalog.py, filters.py, tests.py, attrs.py, loop.py,
                 runtime.py, __main__.py (the `minijx` command), bin/ (the binary)
 hatch_build.py  wheel build hook

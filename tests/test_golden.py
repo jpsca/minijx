@@ -317,3 +317,29 @@ chained: {{ nope | default(x) | default("D") }}
     assert "missing key: D D" in html
     assert "empty string: |D" in html
     assert "chained: None" in html
+
+
+# Generated-code paths: plain keyword arguments and fused f-strings
+
+
+def test_component_attribute_names(project):
+    """Plain kwargs where Python allows them, a dict for the rest, same result."""
+    project.write({
+        "c.jx": '{# def a="-", b="-" #}<i {{ attrs.render() }}>{{ a }}{{ b }}|{{ content }}</i>',
+        "page.jx": """{# import "c.jx" as C #}
+<C a="1" b={{ 2 }} data-id="x" class="k" for="f" if="i" @click="go" x:y="z" hidden />
+<C content="given" />
+<C a="x">inner</C>
+""",
+    })
+    project.assert_same("page.jx")
+
+
+def test_text_and_expressions_in_one_fstring(project):
+    project.write({
+        "page.jx": """{# def s, d #}<p a='1' b="2">{ } {{ "{" }}{{ '}' }} \\n \\\\ \\' </p>
+<b>{{ s }}{{ s ~ '!' }}{{ d["k"] }}{{ {"a": 1}["a"] }}{{ 1 != 2 }}{{ "it's" }}{{ 'say "hi"' }}</b>
+\tñ → ✓ {{ s | upper }}{% raw %}{{ raw }} {% if %}{% endraw %}{{ s }}
+""",
+    })
+    project.assert_same("page.jx", s="x{y}z", d={"k": "v"})

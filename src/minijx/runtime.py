@@ -120,69 +120,8 @@ def has_attr(obj: t.Any, name: t.Any) -> bool:
     return getattr_(obj, name, _ABSENT) is not _ABSENT
 
 
-def resolve_filter(name: str) -> t.Callable:
-    from . import filters
-
-    try:
-        return filters.FILTERS[name]
-    except KeyError:
-        raise KeyError(f"No filter named {name!r}") from None
-
-
-def resolve_test(name: str) -> t.Callable:
-    from . import tests
-
-    try:
-        return tests.TESTS[name]
-    except KeyError:
-        raise KeyError(f"No test named {name!r}") from None
-
-
-def to_str(value: t.Any) -> str:
-    """`{{ value }}`: str() of anything, `None` renders as `None` like Jinja."""
-    return value if type(value) is str else str(value)
-
-
-def range_(*args):
-    """Jinja's `range` global; identical to Python's."""
-    return range(*args)
-
-
-def namespace(**kwargs):
-    raise NotImplementedError("namespace() is not supported by minijx")
-
-
-BUILTINS: dict[str, t.Any] = {
-    "range": range,
-    "dict": dict,
-    "list": list,
-    "tuple": tuple,
-    "set": set,
-    "len": len,
-    "min": min,
-    "max": max,
-    "sum": sum,
-    "abs": abs,
-    "round": round,
-    "str": str,
-    "int": int,
-    "float": float,
-    "bool": bool,
-    "zip": zip,
-    "enumerate": enumerate,
-    "sorted": sorted,
-    "reversed": reversed,
-    "isinstance": isinstance,
-    "getattr": getattr,
-    "hasattr": hasattr,
-}
-
-
 from .attrs import Attrs  # noqa: E402
 from .loop import Loop  # noqa: E402
 
 
-__all__ = [
-    "UNDEFINED", "Attrs", "Loop", "escape", "concat", "getattr_", "getitem", "has_attr",
-    "resolve_filter", "resolve_test", "to_str",
-]
+__all__ = ["UNDEFINED", "Attrs", "Loop", "escape", "concat", "getattr_", "getitem", "has_attr"]

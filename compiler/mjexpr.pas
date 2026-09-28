@@ -1,13 +1,18 @@
 (* minijx: Jinja expression -> Python expression.
 
-  Syntax-directed translation with Jinja's precedence (lowest first):
+  Two steps. The parser builds a small tree (TExpr) with Jinja's precedence,
+  lowest first:
     a if b else c, or, and, not, comparisons, + -, ~, * / // %, **, unary,
     primary . [] (), | filter, is test.
-
-  Name resolution: names bound in the template (arguments, set, for targets,
-  content, attrs) are emitted as-is; `loop` maps to the scope's loop variable;
-  a short list of Python builtins passes through; every other name becomes
-  `_globals["name"]`. *)
+  The generator walks the tree and writes Python, resolving each name
+  against the scope it is used in:
+  - names bound in the template (arguments, set, for targets, content,
+    attrs) are emitted as they are;
+  - `loop` becomes the Python variable of the innermost for loop;
+  - a short list of Python builtins passes through;
+  - any other name is a global: `_globals["name"]`.
+  Constructs that need to know what their operand is (`x | default`,
+  `x is defined`, `attrs.x`, `{% call f(a) %}`) look at its node. *)
 unit mjexpr;
 
 {$mode objfpc}{$H+}
@@ -23,19 +28,61 @@ type
     FNames: TStringList;
   public
     Parent: TScope;
-    LoopVar: string; (* Python name the template's `loop` refers to, '' if none *)
+    LoopVar: string;   (* Python name the template's `loop` refers to, '' if none *)
+    LoopUsed: Boolean; (* set on the scope that owns LoopVar when `loop` is used *)
     constructor Create(AParent: TScope);
     destructor Destroy; override;
     procedure Add(const Name: string);
     function IsLocal(const Name: string): Boolean;
-    function FindLoopVar: string;
+    (* the innermost scope with a loop variable, or nil *)
+    function LoopScope: TScope;
+  end;
+
+  TExprKind = (
+    ekName,    (* Value: the name *)
+    ekConst,   (* Value: Python literal: a number, True, False, None *)
+    ekStr,     (* Value: string literal(s) as written *)
+    ekList,    (* Items *)
+    ekTuple,   (* Items; Flag: written with a trailing comma *)
+    ekDict,    (* Items: key, value, key, value... *)
+    ekGetAttr, (* Items[0].Value; Flag: Value is a number (`x.0`) *)
+    ekGetItem, (* Items[0][Items[1]] *)
+    ekSlice,   (* Items[0][Items[1]:Items[2](:Items[3])]; nil parts are empty; Flag: has a step *)
+    ekCall,    (* Items[0](Args) *)
+    ekFilter,  (* Items[0] | Value(Args) *)
+    ekTest,    (* Items[0] is [not] Value(Args); Flag: negated *)
+    ekUnary,   (* Value Items[0], Value is `-` or `+` *)
+    ekNot,     (* not Items[0] *)
+    ekBinary,  (* Items[0] Value Items[1]: + - * / // % ** and or *)
+    ekConcat,  (* Items[0] ~ Items[1] ~ ... *)
+    ekCompare, (* Items[0] Ops[0] Items[1] Ops[1] Items[2] ... *)
+    ekCond     (* Items[0] if Items[1] else Items[2] (nil: Jinja's "") *)
+  );
+
+  TArgKind = (akPositional, akKeyword, akStar, akDoubleStar);
+
+  TExpr = class;
+
+  TCallArg = record
+    Kind: TArgKind;
+    Name: string; (* akKeyword *)
+    Value: TExpr;
+  end;
+
+  TExpr = class
+  public
+    Kind: TExprKind;
+    Pos: Integer; (* 1-based offset in the expression source *)
+    Value: string;
+    Flag: Boolean;
+    Items: array of TExpr;
+    Ops: TStringArray;
+    Args: array of TCallArg;
+    HasArgs: Boolean; (* ekFilter/ekTest: written with arguments *)
+    procedure Add(E: TExpr);
   end;
 
   TXTokKind = (xkName, xkInt, xkFloat, xkStr, xkOp, xkEOF);
-
-  (* What the expression parsed so far looks like; used to compile
-    `x is defined` and `x|default(...)` without raising on missing names. *)
-  TShape = (shOther, shLocal, shGlobal, shAttr, shItem);
 
   TExprTranslator = class
   private
@@ -44,45 +91,46 @@ type
     FSrc: string;
     FBase: Integer; (* 1-based offset of FSrc[1] in FFileSrc *)
     FScope: TScope;
+    FNodes: TList;  (* every node created, freed with the translator *)
     (* tokens *)
     FPos: Integer;
     FTokKind: TXTokKind;
     FTokVal: string;
     FTokPos: Integer;
-    (* shape of the last primary+postfix *)
-    FShape: TShape;
-    FShapeObj: string;
-    FShapeKey: string;
-    (* the callee and arguments of the call ParsePostfix parsed last *)
-    FLastCallee: string;
-    FLastArgs: string;
     procedure Fail(TokPos: Integer; const Msg: string);
     procedure Next;
     function IsName(const V: string): Boolean;
     function IsOp(const V: string): Boolean;
     procedure Expect(const V: string);
-    function ParseExpression: string;
-    function ParseCondExpr: string;
-    function ParseOr: string;
-    function ParseAnd: string;
-    function ParseNot: string;
-    function ParseCompare: string;
-    function ParseMath1: string;
-    function ParseConcat: string;
-    function ParseMath2: string;
-    function ParsePow: string;
-    function ParseUnary(WithFilter: Boolean = True): string;
-    function ParsePrimary: string;
-    function ParsePostfix(const E: string): string;
-    function ParseFilterExpr(const E: string): string;
-    function ParseCallArgs(out Args: string): Boolean;
-    function ParseList: string;
-    function ParseDict: string;
-    function ParseTupleOrParen: string;
-    function ResolveName(const Name: string; TokPos: Integer): string;
-    function SafeSubject(const E: string): string;
+    function Node(AKind: TExprKind; APos: Integer; const AValue: string = ''): TExpr;
+    (* parser *)
+    function ParseExpression: TExpr;
+    function ParseOr: TExpr;
+    function ParseAnd: TExpr;
+    function ParseNot: TExpr;
+    function ParseCompare: TExpr;
+    function ParseMath1: TExpr;
+    function ParseConcat: TExpr;
+    function ParseMath2: TExpr;
+    function ParsePow: TExpr;
+    function ParseUnary(WithFilter: Boolean = True): TExpr;
+    function ParsePrimary: TExpr;
+    function ParsePostfix(E: TExpr): TExpr;
+    function ParseFilterExpr(E: TExpr): TExpr;
+    function ParseFilter(Subject: TExpr): TExpr;
+    function ParseCallArgs(E: TExpr): Boolean;
+    function ParseSequence(E: TExpr; const Close: string): Boolean;
+    function ParseEnd(const Where: string): Boolean;
+    (* generator *)
+    function Gen(E: TExpr): string;
+    function GenName(E: TExpr): string;
+    function GenArgs(E: TExpr): string;
+    function GenSafe(E: TExpr): string;
+    function GenDefined(E: TExpr): string;
+    function GenTest(E: TExpr): string;
     function FilterCall(const Name, Subject, Args: string): string;
-    function TestCall(const Name, Subject, Args: string): string;
+    function IsRuntimeObject(E: TExpr): Boolean;
+    function IsGlobal(E: TExpr): Boolean;
   public
     UsesLoop: Boolean;
     (* the expression calls a filter / a test looked up by name *)
@@ -90,6 +138,7 @@ type
     UsesTests: Boolean;
     constructor Create(const AFile, AFileSrc, ASrc: string; ABase: Integer;
       AScope: TScope);
+    destructor Destroy; override;
     (* Translate the whole source as one expression. *)
     function Translate: string;
     (* `a, b` or `(a, b)` or `a`: Python target plus the names it binds. *)
@@ -149,21 +198,22 @@ begin
   Result := False;
 end;
 
-function TScope.FindLoopVar: string;
-var
-  S: TScope;
+function TScope.LoopScope: TScope;
 begin
-  S := Self;
-  while S <> nil do
-  begin
-    if S.LoopVar <> '' then
-      Exit(S.LoopVar);
-    S := S.Parent;
-  end;
-  Result := '';
+  Result := Self;
+  while (Result <> nil) and (Result.LoopVar = '') do
+    Result := Result.Parent;
 end;
 
-(* TExprTranslator *)
+(* TExpr *)
+
+procedure TExpr.Add(E: TExpr);
+begin
+  SetLength(Items, Length(Items) + 1);
+  Items[High(Items)] := E;
+end;
+
+(* TExprTranslator: tokens *)
 
 constructor TExprTranslator.Create(const AFile, AFileSrc, ASrc: string; ABase: Integer;
   AScope: TScope);
@@ -173,9 +223,28 @@ begin
   FSrc := ASrc;
   FBase := ABase;
   FScope := AScope;
+  FNodes := TList.Create;
   FPos := 1;
-  UsesLoop := False;
   Next;
+end;
+
+destructor TExprTranslator.Destroy;
+var
+  i: Integer;
+begin
+  for i := 0 to FNodes.Count - 1 do
+    TExpr(FNodes[i]).Free;
+  FNodes.Free;
+  inherited;
+end;
+
+function TExprTranslator.Node(AKind: TExprKind; APos: Integer; const AValue: string): TExpr;
+begin
+  Result := TExpr.Create;
+  Result.Kind := AKind;
+  Result.Pos := APos;
+  Result.Value := AValue;
+  FNodes.Add(Result);
 end;
 
 procedure TExprTranslator.Fail(TokPos: Integer; const Msg: string);
@@ -301,80 +370,87 @@ begin
   Next;
 end;
 
-function TExprTranslator.Translate: string;
+(* True at the end of the source; fails on anything else. *)
+function TExprTranslator.ParseEnd(const Where: string): Boolean;
 begin
-  Result := ParseExpression;
   if FTokKind <> xkEOF then
-    Fail(FTokPos, 'Unexpected `' + FTokVal + '`');
+    Fail(FTokPos, 'Unexpected `' + FTokVal + '`' + Where);
+  Result := True;
 end;
 
-function TExprTranslator.ParseExpression: string;
-begin
-  Result := ParseCondExpr;
-end;
+(* TExprTranslator: parser *)
 
-function TExprTranslator.ParseCondExpr: string;
+function TExprTranslator.ParseExpression: TExpr;
 var
-  Cond, Alt: string;
+  Cond: TExpr;
 begin
   Result := ParseOr;
   while IsName('if') do
   begin
+    Cond := Node(ekCond, FTokPos);
     Next;
-    Cond := ParseOr;
+    Cond.Add(Result);
+    Cond.Add(ParseOr);
     if IsName('else') then
     begin
       Next;
-      Alt := ParseCondExpr();
+      Cond.Add(ParseExpression()); (* `()`: a call, not the Result *)
     end
     else
-      Alt := '""'; (* Jinja renders a missing else as an empty string *)
-    Result := '(' + Result + ' if ' + Cond + ' else ' + Alt + ')';
-    FShape := shOther;
+      Cond.Add(nil);
+    Result := Cond;
   end;
 end;
 
-function TExprTranslator.ParseOr: string;
+function TExprTranslator.ParseOr: TExpr;
+var
+  E: TExpr;
 begin
   Result := ParseAnd;
   while IsName('or') do
   begin
+    E := Node(ekBinary, FTokPos, 'or');
     Next;
-    Result := '(' + Result + ' or ' + ParseAnd + ')';
-    FShape := shOther;
+    E.Add(Result);
+    E.Add(ParseAnd);
+    Result := E;
   end;
 end;
 
-function TExprTranslator.ParseAnd: string;
+function TExprTranslator.ParseAnd: TExpr;
+var
+  E: TExpr;
 begin
   Result := ParseNot;
   while IsName('and') do
   begin
+    E := Node(ekBinary, FTokPos, 'and');
     Next;
-    Result := '(' + Result + ' and ' + ParseNot + ')';
-    FShape := shOther;
+    E.Add(Result);
+    E.Add(ParseNot);
+    Result := E;
   end;
 end;
 
-function TExprTranslator.ParseNot: string;
+function TExprTranslator.ParseNot: TExpr;
 begin
   if IsName('not') then
   begin
+    Result := Node(ekNot, FTokPos);
     Next;
-    Result := '(not ' + ParseNot() + ')';
-    FShape := shOther;
+    Result.Add(ParseNot()); (* `()`: a call, not the Result *)
   end
   else
     Result := ParseCompare;
 end;
 
-function TExprTranslator.ParseCompare: string;
+function TExprTranslator.ParseCompare: TExpr;
 var
+  First: TExpr;
   Op: string;
-  Chained: Boolean;
 begin
-  Result := ParseMath1;
-  Chained := False;
+  First := ParseMath1;
+  Result := First;
   while True do
   begin
     if (FTokKind = xkOp) and InList(FTokVal, ['==', '!=', '<', '>', '<=', '>=']) then
@@ -397,133 +473,98 @@ begin
     end
     else
       Break;
-    Result := Result + ' ' + Op + ' ' + ParseMath1;
-    Chained := True;
-  end;
-  if Chained then
-  begin
-    Result := '(' + Result + ')';
-    FShape := shOther;
+    if Result = First then
+    begin
+      Result := Node(ekCompare, First.Pos);
+      Result.Add(First);
+    end;
+    SetLength(Result.Ops, Length(Result.Ops) + 1);
+    Result.Ops[High(Result.Ops)] := Op;
+    Result.Add(ParseMath1);
   end;
 end;
 
-function TExprTranslator.ParseMath1: string;
+function TExprTranslator.ParseMath1: TExpr;
 var
-  Op: string;
+  E: TExpr;
 begin
   Result := ParseConcat;
   while (FTokKind = xkOp) and ((FTokVal = '+') or (FTokVal = '-')) do
   begin
-    Op := FTokVal;
+    E := Node(ekBinary, FTokPos, FTokVal);
     Next;
-    Result := '(' + Result + ' ' + Op + ' ' + ParseConcat + ')';
-    FShape := shOther;
+    E.Add(Result);
+    E.Add(ParseConcat);
+    Result := E;
   end;
 end;
 
-function TExprTranslator.ParseConcat: string;
+function TExprTranslator.ParseConcat: TExpr;
 var
-  Parts: string;
+  First: TExpr;
 begin
-  Result := ParseMath2;
-  if IsOp('~') then
+  First := ParseMath2;
+  Result := First;
+  while IsOp('~') do
   begin
-    Parts := Result;
-    while IsOp('~') do
+    if Result = First then
     begin
-      Next;
-      Parts := Parts + ', ' + ParseMath2;
+      Result := Node(ekConcat, First.Pos);
+      Result.Add(First);
     end;
-    Result := 'concat(' + Parts + ')';
-    FShape := shOther;
+    Next;
+    Result.Add(ParseMath2);
   end;
 end;
 
-function TExprTranslator.ParseMath2: string;
+function TExprTranslator.ParseMath2: TExpr;
 var
-  Op: string;
+  E: TExpr;
 begin
   Result := ParsePow;
   while (FTokKind = xkOp) and InList(FTokVal, ['*', '/', '//', '%']) do
   begin
-    Op := FTokVal;
+    E := Node(ekBinary, FTokPos, FTokVal);
     Next;
-    Result := '(' + Result + ' ' + Op + ' ' + ParsePow + ')';
-    FShape := shOther;
+    E.Add(Result);
+    E.Add(ParsePow);
+    Result := E;
   end;
 end;
 
-function TExprTranslator.ParsePow: string;
+function TExprTranslator.ParsePow: TExpr;
+var
+  E: TExpr;
 begin
   Result := ParseUnary;
-  (* Jinja's ** is left associative, Python's is right; keep Jinja's *)
+  (* Jinja's ** is left associative, Python's is right; the tree keeps
+     Jinja's, and the generator parenthesises every operation *)
   while IsOp('**') do
   begin
+    E := Node(ekBinary, FTokPos, '**');
     Next;
-    Result := '(' + Result + ' ** ' + ParseUnary + ')';
-    FShape := shOther;
+    E.Add(Result);
+    E.Add(ParseUnary);
+    Result := E;
   end;
 end;
 
-function TExprTranslator.ParseUnary(WithFilter: Boolean): string;
+function TExprTranslator.ParseUnary(WithFilter: Boolean): TExpr;
 begin
-  if IsOp('-') then
+  if IsOp('-') or IsOp('+') then
   begin
+    (* `-x|abs` is `(-x)|abs`, as in Jinja *)
+    Result := Node(ekUnary, FTokPos, FTokVal);
     Next;
-    Result := '(-' + ParseUnary(False) + ')';
-    FShape := shOther;
-  end
-  else if IsOp('+') then
-  begin
-    Next;
-    Result := '(+' + ParseUnary(False) + ')';
-    FShape := shOther;
+    Result.Add(ParseUnary(False));
   end
   else
-  begin
-    Result := ParsePrimary;
-    Result := ParsePostfix(Result);
-  end;
+    Result := ParsePostfix(ParsePrimary);
   if WithFilter then
     Result := ParseFilterExpr(Result);
 end;
 
-function TExprTranslator.ResolveName(const Name: string; TokPos: Integer): string;
-var
-  LV: string;
-begin
-  FShape := shOther;
-  if (Name = 'true') or (Name = 'True') then
-    Exit('True');
-  if (Name = 'false') or (Name = 'False') then
-    Exit('False');
-  if (Name = 'none') or (Name = 'None') then
-    Exit('None');
-  if Name = 'loop' then
-  begin
-    LV := FScope.FindLoopVar;
-    if LV = '' then
-      Fail(TokPos, '`loop` used outside of a for loop');
-    UsesLoop := True;
-    FShape := shLocal;
-    Exit(LV);
-  end;
-  if FScope.IsLocal(Name) then
-  begin
-    FShape := shLocal;
-    Exit(Name);
-  end;
-  if InList(Name, PyBuiltins) then
-  begin
-    FShape := shLocal;
-    Exit(Name);
-  end;
-  FShape := shGlobal;
-  FShapeKey := Name;
-  Result := '_globals[' + PyStr(Name) + ']';
-end;
-
-function TExprTranslator.ParsePrimary: string;
+function TExprTranslator.ParsePrimary: TExpr;
 var
   P: Integer;
 begin
@@ -531,147 +572,104 @@ begin
   case FTokKind of
     xkName:
       begin
-        Result := ResolveName(FTokVal, P);
+        case FTokVal of
+          'true', 'True': Result := Node(ekConst, P, 'True');
+          'false', 'False': Result := Node(ekConst, P, 'False');
+          'none', 'None': Result := Node(ekConst, P, 'None');
+        else
+          Result := Node(ekName, P, FTokVal);
+        end;
         Next;
       end;
     xkStr:
       begin
-        Result := FTokVal;
+        Result := Node(ekStr, P, FTokVal);
         Next;
         (* adjacent literals concatenate, in Jinja and in Python *)
         while FTokKind = xkStr do
         begin
-          Result := Result + ' ' + FTokVal;
+          Result.Value := Result.Value + ' ' + FTokVal;
           Next;
         end;
-        FShape := shOther;
       end;
     xkInt, xkFloat:
       begin
-        Result := FTokVal;
+        Result := Node(ekConst, P, FTokVal);
         Next;
-        FShape := shOther;
       end;
     xkOp:
       begin
         if FTokVal = '(' then
-          Result := ParseTupleOrParen
+        begin
+          Next;
+          Result := Node(ekTuple, P);
+          (* one item without a trailing comma is just parentheses *)
+          if not ParseSequence(Result, ')') and (Length(Result.Items) = 1) then
+            Result := Result.Items[0];
+        end
         else if FTokVal = '[' then
-          Result := ParseList
+        begin
+          Next;
+          Result := Node(ekList, P);
+          ParseSequence(Result, ']');
+        end
         else if FTokVal = '{' then
-          Result := ParseDict
+        begin
+          Next;
+          Result := Node(ekDict, P);
+          while not IsOp('}') do
+          begin
+            Result.Add(ParseExpression);
+            Expect(':');
+            Result.Add(ParseExpression);
+            if IsOp(',') then
+              Next
+            else
+              Break;
+          end;
+          Expect('}');
+        end
         else
           Fail(P, 'Unexpected `' + FTokVal + '`');
-        FShape := shOther;
       end;
   else
     Fail(P, 'Unexpected end of expression');
   end;
 end;
 
-function TExprTranslator.ParseTupleOrParen: string;
-var
-  Items: string;
-  N: Integer;
-  Trailing: Boolean;
+(* Comma-separated items up to Close, which is consumed. Returns whether
+   the last item was followed by a comma (it makes `(x,)` a tuple). *)
+function TExprTranslator.ParseSequence(E: TExpr; const Close: string): Boolean;
 begin
-  Expect('(');
-  Items := '';
-  N := 0;
-  Trailing := False;
-  while not IsOp(')') do
+  Result := False;
+  while not IsOp(Close) do
   begin
-    if N > 0 then
-      Items := Items + ', ';
-    Items := Items + ParseExpression;
-    Inc(N);
-    Trailing := False;
-    if IsOp(',') then
-    begin
-      Next;
-      Trailing := True;
-    end
-    else
-      Break;
-  end;
-  Expect(')');
-  if (N = 1) and not Trailing then
-    Result := '(' + Items + ')'
-  else if N = 1 then
-    Result := '(' + Items + ',)'
-  else
-    Result := '(' + Items + ')';
-end;
-
-function TExprTranslator.ParseList: string;
-var
-  Items: string;
-  N: Integer;
-begin
-  Expect('[');
-  Items := '';
-  N := 0;
-  while not IsOp(']') do
-  begin
-    if N > 0 then
-      Items := Items + ', ';
-    Items := Items + ParseExpression;
-    Inc(N);
-    if IsOp(',') then
+    E.Add(ParseExpression);
+    Result := IsOp(',');
+    if Result then
       Next
     else
       Break;
   end;
-  Expect(']');
-  Result := '[' + Items + ']';
+  Expect(Close);
+  E.Flag := Result;
 end;
 
-function TExprTranslator.ParseDict: string;
+(* `(args)` at the current position, into E.Args. False if there is none. *)
+function TExprTranslator.ParseCallArgs(E: TExpr): Boolean;
 var
-  Items, K: string;
-  N: Integer;
-begin
-  Expect('{');
-  Items := '';
-  N := 0;
-  while not IsOp('}') do
-  begin
-    if N > 0 then
-      Items := Items + ', ';
-    K := ParseExpression;
-    Expect(':');
-    Items := Items + K + ': ' + ParseExpression;
-    Inc(N);
-    if IsOp(',') then
-      Next
-    else
-      Break;
-  end;
-  Expect('}');
-  Result := '{' + Items + '}';
-end;
-
-(* Parses `(args)` at the current position. Returns False if there is no `(`.
-  Keyword arguments whose name is a Python keyword go through `**{...}`. *)
-function TExprTranslator.ParseCallArgs(out Args: string): Boolean;
-var
-  Pos, KW: string;
-  Name: string;
-  NamePos: Integer;
-  SavePos: Integer;
+  A: TCallArg;
+  SavePos, SaveTokPos: Integer;
   SaveKind: TXTokKind;
   SaveVal: string;
-  SaveTokPos: Integer;
-  IsKw: Boolean;
 begin
   if not IsOp('(') then
     Exit(False);
   Next;
-  Pos := '';
-  KW := '';
   while not IsOp(')') do
   begin
-    IsKw := False;
+    A := Default(TCallArg);
+    A.Kind := akPositional;
     if FTokKind = xkName then
     begin
       (* look ahead for `name=` (but not `name==`) *)
@@ -679,13 +677,12 @@ begin
       SaveKind := FTokKind;
       SaveVal := FTokVal;
       SaveTokPos := FTokPos;
-      Name := FTokVal;
-      NamePos := FTokPos;
       Next;
       if IsOp('=') then
       begin
         Next;
-        IsKw := True;
+        A.Kind := akKeyword;
+        A.Name := SaveVal;
       end
       else
       begin
@@ -695,128 +692,268 @@ begin
         FTokPos := SaveTokPos;
       end;
     end;
-    if IsKw then
-    begin
-      if IsPyKeyword(Name) then
-        KW := KW + PyStr(Name) + ': ' + ParseExpression + ', '
-      else
-        Pos := Pos + Name + '=' + ParseExpression + ', ';
-    end
-    else if IsOp('**') then
-    begin
-      Next;
-      Pos := Pos + '**' + ParseExpression + ', ';
-    end
-    else if IsOp('*') then
-    begin
-      Next;
-      Pos := Pos + '*' + ParseExpression + ', ';
-    end
-    else
-      Pos := Pos + ParseExpression + ', ';
+    if A.Kind = akPositional then
+      if IsOp('**') then
+      begin
+        Next;
+        A.Kind := akDoubleStar;
+      end
+      else if IsOp('*') then
+      begin
+        Next;
+        A.Kind := akStar;
+      end;
+    A.Value := ParseExpression;
+    SetLength(E.Args, Length(E.Args) + 1);
+    E.Args[High(E.Args)] := A;
     if IsOp(',') then
       Next
     else
       Break;
   end;
   Expect(')');
-  if KW <> '' then
-    Pos := Pos + '**{' + Copy(KW, 1, Length(KW) - 2) + '}, ';
-  if Pos <> '' then
-    Pos := Copy(Pos, 1, Length(Pos) - 2);
-  Args := Pos;
   Result := True;
 end;
 
-function TExprTranslator.ParsePostfix(const E: string): string;
+function TExprTranslator.ParsePostfix(E: TExpr): TExpr;
 var
-  Args, A, B, C: string;
-  Name: string;
+  N: TExpr;
   P: Integer;
-  HasB, HasC: Boolean;
 begin
   Result := E;
   while True do
   begin
+    P := FTokPos;
     if IsOp('.') then
     begin
       Next;
-      P := FTokPos;
-      if FTokKind = xkName then
-        Name := PyStr(FTokVal)
-      else if FTokKind = xkInt then
-        Name := FTokVal
-      else
-        Fail(P, 'Expected an attribute name after `.`');
+      if not (FTokKind in [xkName, xkInt]) then
+        Fail(FTokPos, 'Expected an attribute name after `.`');
+      N := Node(ekGetAttr, P, FTokVal);
+      N.Flag := FTokKind = xkInt;
       Next;
-      FShapeObj := Result;
-      FShapeKey := Name;
-      FShape := shAttr;
-      (* `attrs` and `loop` are runtime objects: plain attribute access *)
-      if (FTokKind <> xkInt) and
-        ((Result = 'attrs') or ((FScope <> nil) and (Result = FScope.FindLoopVar))) and
-        (Copy(Name, 1, 1) = '''') then
-        Result := Result + '.' + Copy(Name, 2, Length(Name) - 2)
-      else
-        Result := 'getattr_(' + Result + ', ' + Name + ')';
+      N.Add(Result);
+      Result := N;
     end
     else if IsOp('[') then
     begin
       Next;
-      (* slice or index *)
-      A := '';
-      B := '';
-      C := '';
-      HasB := False;
-      HasC := False;
+      N := Node(ekGetItem, P);
+      N.Add(Result);
       if not IsOp(':') then
-        A := ParseExpression;
+        N.Add(ParseExpression)
+      else
+        N.Add(nil);
       if IsOp(':') then
       begin
-        HasB := True;
+        (* a slice: [start:stop] or [start:stop:step] *)
+        N.Kind := ekSlice;
         Next;
         if not (IsOp(':') or IsOp(']')) then
-          B := ParseExpression;
+          N.Add(ParseExpression)
+        else
+          N.Add(nil);
         if IsOp(':') then
         begin
-          HasC := True;
+          N.Flag := True;
           Next;
           if not IsOp(']') then
-            C := ParseExpression;
+            N.Add(ParseExpression)
+          else
+            N.Add(nil);
         end;
       end;
       Expect(']');
-      if HasB then
-      begin
-        Result := Result + '[' + A + ':' + B;
-        if HasC then
-          Result := Result + ':' + C;
-        Result := Result + ']';
-        FShape := shOther;
-      end
-      else
-      begin
-        FShapeObj := Result;
-        FShapeKey := A;
-        FShape := shItem;
-        Result := 'getitem(' + Result + ', ' + A + ')';
-      end;
+      Result := N;
     end
     else if IsOp('(') then
     begin
-      ParseCallArgs(Args);
-      FLastCallee := Result;
-      FLastArgs := Args;
-      Result := Result + '(' + Args + ')';
-      FShape := shOther;
+      N := Node(ekCall, P);
+      N.Add(Result);
+      ParseCallArgs(N);
+      Result := N;
     end
     else
       Break;
   end;
 end;
 
-(* The subject expression rewritten so a missing name/attr/item yields None
-  instead of raising; used by `|default` and `is defined`. *)
+(* `name[.name...][(args)]` after a `|`, applied to Subject. *)
+function TExprTranslator.ParseFilter(Subject: TExpr): TExpr;
+begin
+  if FTokKind <> xkName then
+    Fail(FTokPos, 'Expected a filter name after `|`');
+  Result := Node(ekFilter, FTokPos, FTokVal);
+  Next;
+  while IsOp('.') do
+  begin
+    Next;
+    Result.Value := Result.Value + '.' + FTokVal;
+    Next;
+  end;
+  Result.Add(Subject);
+  Result.HasArgs := ParseCallArgs(Result);
+end;
+
+function TExprTranslator.ParseFilterExpr(E: TExpr): TExpr;
+var
+  T: TExpr;
+  A: TCallArg;
+begin
+  Result := E;
+  while True do
+  begin
+    if IsOp('|') then
+    begin
+      Next;
+      Result := ParseFilter(Result);
+    end
+    else if IsName('is') then
+    begin
+      T := Node(ekTest, FTokPos);
+      Next;
+      if IsName('not') then
+      begin
+        T.Flag := True;
+        Next;
+      end;
+      if FTokKind <> xkName then
+        Fail(FTokPos, 'Expected a test name after `is`');
+      T.Value := FTokVal;
+      Next;
+      T.Add(Result);
+      (* the argument: `(a, b)`, or a single primary as in `is divisibleby 3` *)
+      T.HasArgs := ParseCallArgs(T);
+      if not T.HasArgs and
+        ((FTokKind in [xkName, xkStr, xkInt, xkFloat]) or IsOp('[') or IsOp('{') or IsOp('('))
+        and not (IsName('else') or IsName('or') or IsName('and') or IsName('if')) then
+      begin
+        if IsName('is') then
+          Fail(FTokPos, 'You cannot chain multiple tests with one `is`');
+        A := Default(TCallArg);
+        A.Kind := akPositional;
+        A.Value := ParsePostfix(ParsePrimary);
+        SetLength(T.Args, 1);
+        T.Args[0] := A;
+        T.HasArgs := True;
+      end;
+      Result := T;
+    end
+    else
+      Break;
+  end;
+end;
+
+(* TExprTranslator: generator *)
+
+(* `attrs` and `loop` are minijx's own objects: `attrs.render` needs no
+   getattr/getitem fallback *)
+function TExprTranslator.IsRuntimeObject(E: TExpr): Boolean;
+begin
+  Result := (E.Kind = ekName) and
+    ((E.Value = 'loop') or ((E.Value = 'attrs') and FScope.IsLocal('attrs')));
+end;
+
+function TExprTranslator.IsGlobal(E: TExpr): Boolean;
+begin
+  Result := (E.Kind = ekName) and (E.Value <> 'loop') and not FScope.IsLocal(E.Value)
+    and not InList(E.Value, PyBuiltins);
+end;
+
+function TExprTranslator.GenName(E: TExpr): string;
+var
+  S: TScope;
+begin
+  if E.Value = 'loop' then
+  begin
+    S := FScope.LoopScope;
+    if S = nil then
+      Fail(E.Pos, '`loop` used outside of a for loop');
+    S.LoopUsed := True;
+    UsesLoop := True;
+    Exit(S.LoopVar);
+  end;
+  if IsGlobal(E) then
+    Result := '_globals[' + PyStr(E.Value) + ']'
+  else
+    Result := E.Value;
+end;
+
+(* The arguments of a call as Python. Keyword arguments named like a Python
+   keyword (`class=`) travel in a `**{...}`. *)
+function TExprTranslator.GenArgs(E: TExpr): string;
+var
+  i: Integer;
+  A: TCallArg;
+  Kw: string;
+begin
+  Result := '';
+  Kw := '';
+  for i := 0 to High(E.Args) do
+  begin
+    A := E.Args[i];
+    case A.Kind of
+      akPositional: Result := Result + Gen(A.Value) + ', ';
+      akStar: Result := Result + '*' + Gen(A.Value) + ', ';
+      akDoubleStar: Result := Result + '**' + Gen(A.Value) + ', ';
+      akKeyword:
+        if IsPyKeyword(A.Name) then
+          Kw := Kw + PyStr(A.Name) + ': ' + Gen(A.Value) + ', '
+        else
+          Result := Result + A.Name + '=' + Gen(A.Value) + ', ';
+    end;
+  end;
+  if Kw <> '' then
+    Result := Result + '**{' + Copy(Kw, 1, Length(Kw) - 2) + '}, ';
+  if Result <> '' then
+    SetLength(Result, Length(Result) - 2);
+end;
+
+(* A missing global, attribute or item gives UNDEFINED instead of raising;
+   for `x | default(...)`. *)
+function TExprTranslator.GenSafe(E: TExpr): string;
+begin
+  if IsGlobal(E) then
+    Result := '_globals.get(' + PyStr(E.Value) + ', UNDEFINED)'
+  else if E.Kind = ekGetAttr then
+  begin
+    if E.Flag then
+      Result := 'getattr_(' + Gen(E.Items[0]) + ', ' + E.Value + ', UNDEFINED)'
+    else
+      Result := 'getattr_(' + Gen(E.Items[0]) + ', ' + PyStr(E.Value) + ', UNDEFINED)';
+  end
+  else if E.Kind = ekGetItem then
+    Result := 'getitem(' + Gen(E.Items[0]) + ', ' + Gen(E.Items[1]) + ', UNDEFINED)'
+  else
+    Result := Gen(E);
+end;
+
+(* `x is defined`, without raising for a missing x. *)
+function TExprTranslator.GenDefined(E: TExpr): string;
+begin
+  if E.Kind = ekName then
+  begin
+    if IsGlobal(E) then
+      Result := '(' + PyStr(E.Value) + ' in _globals)'
+    else
+    begin
+      GenName(E); (* `loop` outside a loop is still an error *)
+      Result := 'True';
+    end;
+  end
+  else if E.Kind = ekGetAttr then
+  begin
+    if E.Flag then
+      Result := 'has_attr(' + Gen(E.Items[0]) + ', ' + E.Value + ')'
+    else
+      Result := 'has_attr(' + Gen(E.Items[0]) + ', ' + PyStr(E.Value) + ')';
+  end
+  else if E.Kind = ekGetItem then
+    Result := 'has_attr(' + Gen(E.Items[0]) + ', ' + Gen(E.Items[1]) + ')'
+  else
+    Result := '(' + Gen(E) + ' is not None)';
+end;
+
 (* Filters and tests are looked up by name, in the dict the catalog passes in
    `_globals` (bound to `_f` / `_t` at the top of the component), so custom
    ones work and can replace builtin filters. *)
@@ -829,127 +966,143 @@ begin
   Result := Result + ')';
 end;
 
-function TExprTranslator.TestCall(const Name, Subject, Args: string): string;
-begin
-  UsesTests := True;
-  Result := '_t[' + PyStr(Name) + '](' + Subject;
-  if Args <> '' then
-    Result := Result + ', ' + Args;
-  Result := Result + ')';
-end;
-
-function TExprTranslator.SafeSubject(const E: string): string;
-begin
-  case FShape of
-    shGlobal: Result := '_globals.get(' + PyStr(FShapeKey) + ', UNDEFINED)';
-    shAttr: Result := 'getattr_(' + FShapeObj + ', ' + FShapeKey + ', UNDEFINED)';
-    shItem: Result := 'getitem(' + FShapeObj + ', ' + FShapeKey + ', UNDEFINED)';
-  else
-    Result := E;
-  end;
-end;
-
-function TExprTranslator.ParseFilterExpr(const E: string): string;
+function TExprTranslator.GenTest(E: TExpr): string;
 var
-  Name, Args, Test, Arg: string;
-  Negate, HasArgs: Boolean;
-  P: Integer;
-  Shape: TShape;
-  ShapeObj, ShapeKey: string;
+  Subject, Arg: string;
+  Negate: Boolean;
 begin
-  Result := E;
-  while True do
+  Negate := E.Flag;
+  (* tests with a Python equivalent are compiled into it *)
+  if (E.Value = 'defined') or (E.Value = 'undefined') then
   begin
-    if IsOp('|') then
-    begin
-      Next;
-      P := FTokPos;
-      if FTokKind <> xkName then
-        Fail(P, 'Expected a filter name after `|`');
-      Name := FTokVal;
-      Next;
-      while IsOp('.') do
+    Result := GenDefined(E.Items[0]);
+    if E.Value = 'undefined' then
+      Negate := not Negate;
+  end
+  else
+  begin
+    Subject := Gen(E.Items[0]);
+    Arg := GenArgs(E);
+    case E.Value of
+      'none': Result := '(' + Subject + ' is None)';
+      'in': Result := '(' + Subject + ' in ' + Arg + ')';
+      'callable': Result := 'callable(' + Subject + ')';
+      'sameas': Result := '(' + Subject + ' is ' + Arg + ')';
+      'eq', 'equalto', '==': Result := '(' + Subject + ' == ' + Arg + ')';
+      'ne', '!=': Result := '(' + Subject + ' != ' + Arg + ')';
+      'gt', 'greaterthan', '>': Result := '(' + Subject + ' > ' + Arg + ')';
+      'ge', '>=': Result := '(' + Subject + ' >= ' + Arg + ')';
+      'lt', 'lessthan', '<': Result := '(' + Subject + ' < ' + Arg + ')';
+      'le', '<=': Result := '(' + Subject + ' <= ' + Arg + ')';
+    else
+      UsesTests := True;
+      Result := '_t[' + PyStr(E.Value) + '](' + Subject;
+      if Arg <> '' then
+        Result := Result + ', ' + Arg;
+      Result := Result + ')';
+    end;
+  end;
+  if Negate then
+    Result := '(not ' + Result + ')';
+end;
+
+function TExprTranslator.Gen(E: TExpr): string;
+var
+  i: Integer;
+  Subject: string;
+begin
+  case E.Kind of
+    ekName: Result := GenName(E);
+    ekConst, ekStr: Result := E.Value;
+    ekList, ekTuple, ekDict, ekConcat:
       begin
-        Next;
-        Name := Name + '.' + FTokVal;
-        Next;
-      end;
-      if (Name = 'default') or (Name = 'd') then
-        Result := SafeSubject(Result);
-      FShape := shOther;
-      if not ParseCallArgs(Args) then
-        Args := '';
-      Result := FilterCall(Name, Result, Args);
-    end
-    else if IsName('is') then
-    begin
-      Next;
-      Negate := False;
-      if IsName('not') then
-      begin
-        Negate := True;
-        Next;
-      end;
-      P := FTokPos;
-      if FTokKind <> xkName then
-        Fail(P, 'Expected a test name after `is`');
-      Name := FTokVal;
-      Next;
-      Shape := FShape;
-      ShapeObj := FShapeObj;
-      ShapeKey := FShapeKey;
-      (* argument: `(a, b)` or a single primary *)
-      HasArgs := ParseCallArgs(Args);
-      if not HasArgs then
-      begin
-        Args := '';
-        if ((FTokKind in [xkName, xkStr, xkInt, xkFloat]) or IsOp('[') or IsOp('{') or IsOp('('))
-          and not (IsName('else') or IsName('or') or IsName('and') or IsName('if')) then
+        Result := '';
+        i := 0;
+        while i <= High(E.Items) do
         begin
-          if IsName('is') then
-            Fail(FTokPos, 'You cannot chain multiple tests with one `is`');
-          Arg := ParsePrimary;
-          Arg := ParsePostfix(Arg);
-          Args := Arg;
-          HasArgs := True;
+          if i > 0 then
+            Result := Result + ', ';
+          Result := Result + Gen(E.Items[i]);
+          if E.Kind = ekDict then
+          begin
+            Result := Result + ': ' + Gen(E.Items[i + 1]);
+            Inc(i);
+          end;
+          Inc(i);
+        end;
+        case E.Kind of
+          ekList: Result := '[' + Result + ']';
+          ekDict: Result := '{' + Result + '}';
+          ekConcat: Result := 'concat(' + Result + ')';
+        else
+          if Length(E.Items) = 1 then
+            Result := '(' + Result + ',)'
+          else
+            Result := '(' + Result + ')';
         end;
       end;
-      FShape := shOther;
-      case Name of
-        'defined', 'undefined':
-          begin
-            case Shape of
-              shLocal: Test := 'True';
-              shGlobal: Test := '(' + PyStr(ShapeKey) + ' in _globals)';
-              shAttr: Test := 'has_attr(' + ShapeObj + ', ' + ShapeKey + ')';
-              shItem: Test := 'has_attr(' + ShapeObj + ', ' + ShapeKey + ')';
-            else
-              Test := '(' + Result + ' is not None)';
-            end;
-            if Name = 'undefined' then
-              Negate := not Negate;
-          end;
-        'none': Test := '(' + Result + ' is None)';
-        'in': Test := '(' + Result + ' in ' + Args + ')';
-        'callable': Test := 'callable(' + Result + ')';
-        'sameas': Test := '(' + Result + ' is ' + Args + ')';
-        'eq', 'equalto', '==': Test := '(' + Result + ' == ' + Args + ')';
-        'ne', '!=': Test := '(' + Result + ' != ' + Args + ')';
-        'gt', 'greaterthan', '>': Test := '(' + Result + ' > ' + Args + ')';
-        'ge', '>=': Test := '(' + Result + ' >= ' + Args + ')';
-        'lt', 'lessthan', '<': Test := '(' + Result + ' < ' + Args + ')';
-        'le', '<=': Test := '(' + Result + ' <= ' + Args + ')';
+    ekGetAttr:
+      if IsRuntimeObject(E.Items[0]) and not E.Flag then
+        Result := Gen(E.Items[0]) + '.' + E.Value
+      else if E.Flag then
+        Result := 'getattr_(' + Gen(E.Items[0]) + ', ' + E.Value + ')'
       else
-        Test := TestCall(Name, Result, Args);
+        Result := 'getattr_(' + Gen(E.Items[0]) + ', ' + PyStr(E.Value) + ')';
+    ekGetItem:
+      Result := 'getitem(' + Gen(E.Items[0]) + ', ' + Gen(E.Items[1]) + ')';
+    ekSlice:
+      begin
+        Result := Gen(E.Items[0]) + '[';
+        for i := 1 to High(E.Items) do
+        begin
+          if i > 1 then
+            Result := Result + ':';
+          if E.Items[i] <> nil then
+            Result := Result + Gen(E.Items[i]);
+        end;
+        Result := Result + ']';
       end;
-      if Negate then
-        Result := '(not ' + Test + ')'
-      else
-        Result := Test;
-    end
-    else
-      Break;
+    ekCall: Result := Gen(E.Items[0]) + '(' + GenArgs(E) + ')';
+    ekFilter:
+      begin
+        if (E.Value = 'default') or (E.Value = 'd') then
+          Subject := GenSafe(E.Items[0])
+        else
+          Subject := Gen(E.Items[0]);
+        Result := FilterCall(E.Value, Subject, GenArgs(E));
+      end;
+    ekTest: Result := GenTest(E);
+    ekUnary: Result := '(' + E.Value + Gen(E.Items[0]) + ')';
+    ekNot: Result := '(not ' + Gen(E.Items[0]) + ')';
+    ekBinary: Result := '(' + Gen(E.Items[0]) + ' ' + E.Value + ' ' + Gen(E.Items[1]) + ')';
+    ekCompare:
+      begin
+        Result := '(' + Gen(E.Items[0]);
+        for i := 0 to High(E.Ops) do
+          Result := Result + ' ' + E.Ops[i] + ' ' + Gen(E.Items[i + 1]);
+        Result := Result + ')';
+      end;
+    ekCond:
+      begin
+        Result := '(' + Gen(E.Items[0]) + ' if ' + Gen(E.Items[1]) + ' else ';
+        if E.Items[2] <> nil then
+          Result := Result + Gen(E.Items[2])
+        else
+          Result := Result + '""'; (* Jinja renders a missing else as an empty string *)
+        Result := Result + ')';
+      end;
   end;
+end;
+
+(* TExprTranslator: entry points *)
+
+function TExprTranslator.Translate: string;
+var
+  E: TExpr;
+begin
+  E := ParseExpression;
+  ParseEnd('');
+  Result := Gen(E);
 end;
 
 function TExprTranslator.TranslateTarget(out Names: TStringArray): string;
@@ -1003,6 +1156,7 @@ end;
 procedure TExprTranslator.TranslateFor(out Target: string; out Names: TStringArray;
   out Iter: string; out Cond: string; out Recursive: Boolean; IterScope: TScope);
 var
+  IterExpr, CondExpr: TExpr;
   BodyScope: TScope;
   i: Integer;
 begin
@@ -1010,35 +1164,41 @@ begin
   if not IsName('in') then
     Fail(FTokPos, 'Expected `in`');
   Next;
-  (* the iterable is resolved in the enclosing scope *)
-  FScope := IterScope;
-  Iter := ParseOr; (* no inline-if here, like Jinja *)
-  Cond := '';
-  Recursive := False;
+  IterExpr := ParseOr; (* no inline-if here, like Jinja *)
+  CondExpr := nil;
   if IsName('if') then
   begin
     Next;
+    CondExpr := ParseExpression;
+  end;
+  Recursive := IsName('recursive');
+  if Recursive then
+    Next;
+  ParseEnd(' in for statement');
+
+  (* the iterable is resolved in the enclosing scope, the condition where
+     the loop variables are bound *)
+  FScope := IterScope;
+  Iter := Gen(IterExpr);
+  Cond := '';
+  if CondExpr <> nil then
+  begin
     BodyScope := TScope.Create(IterScope);
     try
       for i := 0 to High(Names) do
         BodyScope.Add(Names[i]);
       FScope := BodyScope;
-      Cond := ParseExpression;
+      Cond := Gen(CondExpr);
     finally
       FScope := IterScope;
       BodyScope.Free;
     end;
   end;
-  if IsName('recursive') then
-  begin
-    Next;
-    Recursive := True;
-  end;
-  if FTokKind <> xkEOF then
-    Fail(FTokPos, 'Unexpected `' + FTokVal + '` in for statement');
 end;
 
 procedure TExprTranslator.TranslateSet(out Name: string; out Value: string);
+var
+  E: TExpr;
 begin
   if FTokKind <> xkName then
     Fail(FTokPos, 'Expected a variable name after `set`');
@@ -1047,34 +1207,35 @@ begin
   if IsOp(',') or IsOp('.') or IsOp('[') then
     Fail(FTokPos, 'minijx only supports `{% set name = value %}`');
   Expect('=');
-  Value := ParseExpression;
-  if FTokKind <> xkEOF then
-    Fail(FTokPos, 'Unexpected `' + FTokVal + '` in set statement');
+  E := ParseExpression;
+  ParseEnd(' in set statement');
+  Value := Gen(E);
 end;
 
 (* `upper|replace("a", "b")` applied to Subject (a Python expression). *)
 function TExprTranslator.TranslateFilterChain(const Subject: string): string;
 var
-  Name, Args: string;
+  Chain: array of TExpr;
+  F: TExpr;
+  i: Integer;
 begin
-  Result := Subject;
-  FShape := shOther;
+  SetLength(Chain, 0);
   while True do
   begin
     if FTokKind <> xkName then
       Fail(FTokPos, 'Expected a filter name');
-    Name := FTokVal;
-    Next;
-    if not ParseCallArgs(Args) then
-      Args := '';
-    Result := FilterCall(Name, Result, Args);
+    F := ParseFilter(nil);
+    SetLength(Chain, Length(Chain) + 1);
+    Chain[High(Chain)] := F;
     if IsOp('|') then
       Next
     else
       Break;
   end;
-  if FTokKind <> xkEOF then
-    Fail(FTokPos, 'Unexpected `' + FTokVal + '` in filter statement');
+  ParseEnd(' in filter statement');
+  Result := Subject;
+  for i := 0 to High(Chain) do
+    Result := FilterCall(Chain[i].Value, Result, GenArgs(Chain[i]));
 end;
 
 (* `{% call fn %}` -> `fn(Body)`; `{% call obj.fn(1, x=2) %}` ->
@@ -1082,27 +1243,23 @@ end;
    callable is a variable, and the rendered body goes first. *)
 function TExprTranslator.TranslateCallBlock(const Body: string): string;
 var
-  E: string;
-  P: Integer;
+  E: TExpr;
+  Args: string;
 begin
-  P := FTokPos;
   if FTokKind = xkEOF then
-    Fail(P, '`{% call %}` needs something to call');
-  FLastCallee := '';
-  FLastArgs := '';
-  E := ParsePrimary;
-  E := ParsePostfix(E);
-  if FTokKind <> xkEOF then
-    Fail(FTokPos, 'Unexpected `' + FTokVal + '` in call statement; expected `name` or `name(args)`');
-  if (FLastCallee <> '') and (E = FLastCallee + '(' + FLastArgs + ')') then
+    Fail(FTokPos, '`{% call %}` needs something to call');
+  E := ParsePostfix(ParsePrimary);
+  ParseEnd(' in call statement; expected `name` or `name(args)`');
+  if E.Kind = ekCall then
   begin
-    if FLastArgs <> '' then
-      Result := FLastCallee + '(' + Body + ', ' + FLastArgs + ')'
-    else
-      Result := FLastCallee + '(' + Body + ')';
+    Args := GenArgs(E);
+    Result := Gen(E.Items[0]) + '(' + Body;
+    if Args <> '' then
+      Result := Result + ', ' + Args;
+    Result := Result + ')';
   end
   else
-    Result := E + '(' + Body + ')';
+    Result := Gen(E) + '(' + Body + ')';
 end;
 
 end.

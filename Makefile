@@ -1,5 +1,8 @@
 FPC ?= fpc
-FPCFLAGS ?= -O2 -Xs -XX -CX -vewn -Fucompiler -FEbuild -FUbuild/units
+# the options live in compiler/minijx.cfg, shared with hatch_build.py
+FPCFLAGS ?= @compiler/minijx.cfg -Fucompiler -FEbuild -FUbuild/units
+# the one place the version is written; the binary gets it from here
+VERSION := $(shell sed -n 's/^__version__ = "\(.*\)"/\1/p' src/minijx/__init__.py)
 BIN = build/minijx
 # where the package looks for its binary; the wheel build puts it there too
 PKG_BIN = src/minijx/bin/minijx
@@ -14,9 +17,9 @@ all: build
 
 build: $(BIN) $(PKG_BIN)
 
-$(BIN): compiler/*.pas compiler/*.lpr
+$(BIN): compiler/*.pas compiler/*.lpr compiler/minijx.cfg src/minijx/__init__.py
 	mkdir -p build/units
-	$(FPC) $(FPCFLAGS) compiler/minijx.lpr
+	MINIJX_VERSION=$(VERSION) $(FPC) $(FPCFLAGS) compiler/minijx.lpr
 
 $(PKG_BIN): $(BIN)
 	mkdir -p $(dir $(PKG_BIN))

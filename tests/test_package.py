@@ -23,8 +23,8 @@ def run_module(*args):
 
 
 def test_versions_match():
-    source = (REPO / "compiler" / "mjcodegen.pas").read_text()
-    assert re.search(r"MinijxVersion = '([^']+)'", source).group(1) == minijx.__version__
+    """The binary gets its version from the package when it is built."""
+    source = (REPO / "compiler" / "mjcompiler.pas").read_text()
     assert re.search(r"ModuleFormat = (\d+);", source).group(1) == str(MODULE_FORMAT)
     out = subprocess.run([str(BIN), "--version"], capture_output=True, text=True).stdout
     assert out.strip() == f"minijx {minijx.__version__} (module format {MODULE_FORMAT})"

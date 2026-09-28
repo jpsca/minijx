@@ -403,7 +403,8 @@ function TLexer.ScanTag(I: Integer): Integer;
 var
   T: TToken;
   A: TAttr;
-  J, NStart, N: Integer;
+  J, NStart, N, K: Integer;
+  Key: string;
   Quote: Char;
 begin
   T := Default(TToken);
@@ -490,6 +491,11 @@ begin
       J := NStart;
       A.Kind := akFlag;
     end;
+    (* as Jx: `data-id` and `data_id` are the same argument *)
+    Key := ReplaceChar(A.Name, '-', '_');
+    for K := 0 to N - 1 do
+      if ReplaceChar(T.Attrs[K].Name, '-', '_') = Key then
+        Fail(A.Pos, 'Duplicate attribute `' + A.Name + '` on `' + T.Name + '`');
     SetLength(T.Attrs, N + 1);
     T.Attrs[N] := A;
     Inc(N);

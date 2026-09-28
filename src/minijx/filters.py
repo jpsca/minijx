@@ -16,6 +16,7 @@ from collections import abc
 from itertools import groupby as _groupby
 
 from .runtime import UNDEFINED, escape, getattr_
+from .tests import TESTS  # tests.py imports this module only inside a function
 
 
 __all__ = [
@@ -322,10 +323,6 @@ def _map(value, args, kwargs, filters):
             yield func(item)
 
 
-def map(value, *args, **kwargs):
-    return _map(value, args, kwargs, FILTERS)
-
-
 def max(value, case_sensitive=False, attribute=None):
     key_func = _make_attrgetter(attribute, postprocess=_ignore_case if not case_sensitive else None)
     return _builtin_max(value, key=key_func, default=None)
@@ -363,9 +360,7 @@ def _prepare_select_or_reject(args, kwargs, modfunc, lookup_attr, tests):
     return lambda item: modfunc(test(transfunc(item), *args, **kwargs))
 
 
-def _select_or_reject(value, args, kwargs, modfunc, lookup_attr, tests=None):
-    if tests is None:
-        from .tests import TESTS as tests
+def _select_or_reject(value, args, kwargs, modfunc, lookup_attr, tests):
     if value:
         func = _prepare_select_or_reject(args, kwargs, modfunc, lookup_attr, tests)
         for item in value:
@@ -381,27 +376,12 @@ def _drop(x):
     return not x
 
 
-def select(value, *args, **kwargs):
-    return _select_or_reject(value, args, kwargs, _keep, False)
-
-
-def reject(value, *args, **kwargs):
-    return _select_or_reject(value, args, kwargs, _drop, False)
-
-
-def selectattr(value, *args, **kwargs):
-    return _select_or_reject(value, args, kwargs, _keep, True)
-
-
-def rejectattr(value, *args, **kwargs):
-    return _select_or_reject(value, args, kwargs, _drop, True)
-
-
 def bound_to(filters: dict, tests: dict) -> dict:
     """
-    `map`, `select`, `reject`, `selectattr` and `rejectattr` looking names
-    up in the given dicts instead of the builtin ones, so they can use custom
-    filters and tests, as Jinja's do.
+    `map`, `select`, `reject`, `selectattr` and `rejectattr`, looking the
+    filter or test they are given by name up in these dicts. The module's own
+    are bound to the builtin dicts; a catalog with custom filters or tests
+    binds its own set (see environment.py), as Jinja's see custom ones.
     """
 
     def map(value, *args, **kwargs):
@@ -611,6 +591,12 @@ def tojson(value, indent=None):
     )
 
 
-FILTERS = {name: globals()[name] for name in __all__}
+_NAMED = ("map", "select", "reject", "selectattr", "rejectattr")
+
+FILTERS = {name: globals()[name] for name in __all__ if name not in _NAMED}
 FILTERS["escape"] = escape
 FILTERS["e"] = escape
+
+_bound = bound_to(FILTERS, TESTS)
+FILTERS.update(_bound)
+map, select, reject, selectattr, rejectattr = (_bound[name] for name in _NAMED)

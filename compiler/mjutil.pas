@@ -23,6 +23,23 @@ type
     procedure Clear;
   end;
 
+  (* Lines of Python at an indentation level. A block is generated into its
+     own writer when the code around it depends on what the block needs, and
+     then appended. *)
+  TWriter = class
+  private
+    FBuf: TBuf;
+  public
+    Indent: Integer;
+    constructor Create(AIndent: Integer = 0);
+    destructor Destroy; override;
+    procedure Line(const S: string);
+    (* another writer's lines, already indented *)
+    procedure Append(W: TWriter);
+    function Count: Integer;
+    function Text: string;
+  end;
+
 const
   WhitespaceChars = [' ', #9, #13, #10];
   NameStartChars = ['a'..'z', 'A'..'Z', '_'];
@@ -39,6 +56,8 @@ function PyStr(const S: string): string;
 
 (* True if S is a Python keyword and cannot be used as an identifier. *)
 function IsPyKeyword(const S: string): Boolean;
+(* True if S can be written as a Python name: `a_1`, not `1a`, `a-b`, `class`. *)
+function IsPyIdentifier(const S: string): Boolean;
 
 function IsBlank(const S: string): Boolean;
 (* `\r\n` and `\r` to `\n`, as Jinja does with template source *)
@@ -99,6 +118,39 @@ begin
   FCount := 0;
 end;
 
+constructor TWriter.Create(AIndent: Integer);
+begin
+  Indent := AIndent;
+  FBuf := TBuf.Create;
+end;
+
+destructor TWriter.Destroy;
+begin
+  FBuf.Free;
+  inherited;
+end;
+
+procedure TWriter.Line(const S: string);
+begin
+  FBuf.Add(StrRepeat('    ', Indent) + S + #10);
+end;
+
+procedure TWriter.Append(W: TWriter);
+begin
+  if W.Count > 0 then
+    FBuf.Add(W.Text);
+end;
+
+function TWriter.Count: Integer;
+begin
+  Result := FBuf.Count;
+end;
+
+function TWriter.Text: string;
+begin
+  Result := FBuf.Join;
+end;
+
 function PyStr(const S: string): string;
 var
   i: Integer;
@@ -132,6 +184,18 @@ begin
     'except', 'finally', 'for', 'from', 'global', 'if', 'import', 'in', 'is',
     'lambda', 'nonlocal', 'not', 'or', 'pass', 'raise', 'return', 'try',
     'while', 'with', 'yield']);
+end;
+
+function IsPyIdentifier(const S: string): Boolean;
+var
+  i: Integer;
+begin
+  if (S = '') or not (S[1] in NameStartChars) or IsPyKeyword(S) then
+    Exit(False);
+  for i := 2 to Length(S) do
+    if not (S[i] in NameChars) then
+      Exit(False);
+  Result := True;
 end;
 
 function IsBlank(const S: string): Boolean;
@@ -218,8 +282,11 @@ var
   i: Integer;
 begin
   Result := '';
-  for i := 1 to N do
-    Result := Result + S;
+  if N <= 0 then
+    Exit;
+  SetLength(Result, Length(S) * N);
+  for i := 0 to N - 1 do
+    Move(S[1], Result[i * Length(S) + 1], Length(S));
 end;
 
 function Split(const S: string; Sep: Char): TStringArray;

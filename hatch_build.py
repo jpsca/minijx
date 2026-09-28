@@ -52,7 +52,7 @@ def platform_tag() -> str:
     raise RuntimeError(f"minijx wheels are not built for {sys.platform} yet")
 
 
-def compile_binary(out_dir: Path) -> Path:
+def compile_binary(out_dir: Path, version: str) -> Path:
     fpc = shutil.which("fpc")
     if not fpc:
         raise RuntimeError(
@@ -62,11 +62,13 @@ def compile_binary(out_dir: Path) -> Path:
     units = out_dir / "units"
     units.mkdir(parents=True, exist_ok=True)
     cmd = [
-        fpc, "-O2", "-Xs", "-XX", "-CX", "-vewn",
+        fpc, f"@{COMPILER_SRC / 'minijx.cfg'}",
         f"-Fu{COMPILER_SRC}", f"-FE{out_dir}", f"-FU{units}",
         str(COMPILER_SRC / "minijx.lpr"),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # the binary's version comes from the package's, at compile time
+    env = {**os.environ, "MINIJX_VERSION": version}
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if result.returncode != 0:
         raise RuntimeError(f"fpc failed:\n{result.stdout}\n{result.stderr}")
     return out_dir / "minijx"
@@ -85,9 +87,7 @@ def check_version(binary: Path, version: str) -> None:
     catalog = (ROOT / "src" / "minijx" / "catalog.py").read_text(encoding="utf-8")
     module_format = re.search(r"^MODULE_FORMAT = (\d+)", catalog, re.M).group(1)
     if m.group(1) != version:
-        raise RuntimeError(
-            f"compiler version {m.group(1)} (compiler/mjcodegen.pas) != package version {version}"
-        )
+        raise RuntimeError(f"compiler version {m.group(1)} != package version {version}")
     if m.group(2) != module_format:
         raise RuntimeError(
             f"compiler module format {m.group(2)} != runtime MODULE_FORMAT {module_format}"
@@ -105,7 +105,7 @@ class CustomBuildHook(BuildHookInterface):
             binary = Path(prebuilt).resolve()
         else:
             self._tmp = tempfile.mkdtemp(prefix="minijx-build-")
-            binary = compile_binary(Path(self._tmp))
+            binary = compile_binary(Path(self._tmp), self.metadata.version)
         check_version(binary, self.metadata.version)
         build_data["force_include"][str(binary)] = "minijx/bin/minijx"
         build_data["pure_python"] = False
