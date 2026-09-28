@@ -39,6 +39,8 @@ def compile_error(project, source: str, name="a.jx"):
         ("{% call fn | upper %}x{% endcall %}", 1, 12, "expected `name` or `name(args)`"),
         ("{% call fn %}x", 1, 1, "endcall"),
         ("{# def x=foo #}", 1, 10, "Use of foo not allowed"),
+        ('{# import "b.jx" as B #}<B a="1" a="2" />', 1, 34, "Duplicate attribute `a` on `B`"),
+        ('{# import "b.jx" as B #}<B data-id="1" data_id="2" />', 1, 40, "Duplicate attribute `data_id`"),
         ('{# def x="a".upper() #}', 1, 14, "Use of upper not allowed"),
         ("{% set a, b = 1, 2 %}", 1, 9, "only supports"),
         ("{% set x %}y{% endset %}", 1, 1, "only supports"),

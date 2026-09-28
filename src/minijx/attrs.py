@@ -147,49 +147,46 @@ class Attrs:
         return default
 
     def render(self, **kw) -> str:
+        attributes = self._attributes
+        properties = self._properties
+        classes = self._classes
         if kw:
-            render_classes = None
-            for key in CLASS_KEYS:
-                if key in kw:
-                    render_classes = kw.pop(key)
-
-            attributes = dict(self._attributes)
-            classes = list(self._classes)
-            properties = set(self._properties)
-
-            for name, value in kw.items():
-                name = name.replace("_", "-")
-                if value is False or value is None:
-                    attributes.pop(name, None)
-                    properties.discard(name)
-                elif value is True:
-                    properties.add(name)
-                else:
-                    attributes[name] = value
-
+            # `classes` wins over `class` when both are given, as in Jx
+            render_classes = kw.pop(CLASS_ALT_KEY, None) if CLASS_ALT_KEY in kw else kw.pop(CLASS_KEY, None)
+            kw.pop(CLASS_KEY, None)
+            if kw:
+                # copies only when there is something to change: render()
+                # must not modify the attrs
+                attributes = dict(attributes)
+                properties = set(properties)
+                for name, value in kw.items():
+                    name = name.replace("_", "-")
+                    if value is False or value is None:
+                        attributes.pop(name, None)
+                        properties.discard(name)
+                    elif value is True:
+                        properties.add(name)
+                    else:
+                        attributes[name] = value
             if render_classes:
-                new = [name for name in str(render_classes).strip().split() if name not in classes]
-                classes = new + classes
-        else:
-            attributes = self._attributes
-            classes = list(self._classes)
-            properties = self._properties
-
-        if not attributes and not classes and not properties:
-            return ""
+                new = [name for name in str(render_classes).split() if name not in classes]
+                if new:
+                    classes = (*new, *classes)
 
         if classes:
-            items = {**attributes, CLASS_KEY: " ".join(classes)}
+            items = [*attributes.items(), (CLASS_KEY, " ".join(classes))]
+        elif attributes:
+            items = list(attributes.items())
+        elif properties:
+            return " ".join(sorted(properties))
         else:
-            items = attributes
-
+            return ""
         if len(items) > 1:
-            items = dict(sorted(items.items()))
-
-        html_attrs = [f"{name}={quote(value)}" for name, value in items.items()]
+            items.sort()
+        html = " ".join([f"{name}={quote(value)}" for name, value in items])
         if properties:
-            html_attrs.extend(sorted(properties))
-        return " ".join(html_attrs)
+            return html + " " + " ".join(sorted(properties))
+        return html
 
     def _remove(self, name: str) -> None:
         if name in CLASS_KEYS:

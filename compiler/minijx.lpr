@@ -12,7 +12,7 @@ program minijx;
 {$mode objfpc}{$H+}
 
 uses
-  SysUtils, Classes, mjerrors, mjutil, mjcodegen;
+  SysUtils, Classes, mjerrors, mjutil, mjcompiler, mjcomponent;
 
 procedure Usage(const Msg: string = '');
 begin
@@ -64,7 +64,7 @@ var
   OutputSrcs: TStringList; (* ...and the .jx file that claimed each *)
   Compiler: TCompiler;
   i, j, k, Failed, Written: Integer;
-  Arg, OutPath, Code: string;
+  Arg, OutPath, Code, Version: string;
   Comp: TComponent;
 begin
   if ParamCount < 1 then
@@ -79,7 +79,10 @@ begin
     begin
       (* the runtime reads the format to refuse a binary that generates
          modules it cannot load *)
-      WriteLn('minijx ', MinijxVersion, ' (module format ', ModuleFormat, ')');
+      Version := MinijxVersion; (* a variable: the constant may be empty *)
+      if Version = '' then
+        Version := 'unknown';
+      WriteLn('minijx ', Version, ' (module format ', ModuleFormat, ')');
       Halt(0);
     end;
     if StartsWith(Arg, '-') then
@@ -140,6 +143,7 @@ begin
     Compiler.Free;
   end;
   WriteLn(StdErr, 'minijx: ', Written, ' file(s) written, ', Failed, ' failed');
+  (* not Halt(1): the program has to end normally so its strings are freed *)
   if Failed > 0 then
-    Halt(1);
+    ExitCode := 1;
 end.

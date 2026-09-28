@@ -62,6 +62,7 @@ path = "hatch_build.py"
 include = [
     "compiler/*.pas",
     "compiler/*.lpr",
+    "compiler/minijx.cfg",
     "src/minijx",
     "tests",
     "example",
