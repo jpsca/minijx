@@ -1,0 +1,12 @@
+build/
+dist/
+.venv/
+.venv-*/
+src/minijx/bin/
+tests/fixtures/**/*.py
+example/components/**/*.py
+__pycache__/
+*.pyc
+.pytest_cache/
+*.o
+*.ppu

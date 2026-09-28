@@ -1,0 +1,18 @@
+{# import "layout.jx" as Layout #}
+{# css "/static/tree.css" #}
+{# def root #}
+<Layout title="Árbol de archivos">
+  <p>Un solo <code>{% raw %}{% for node in nodes recursive %}{% endraw %}</code> que se llama a sí mismo con <code>loop(node.children)</code>.</p>
+  <ul class="tree">
+  {% for node in [root] recursive %}
+    <li class="depth-{{ loop.depth }}">
+      {% if node.children is defined %}📁{% else %}📄{% endif %}
+      <strong>{{ node.name }}</strong>
+      {% if node.size is defined %}<small>{{ node.size | filesizeformat }}</small>{% endif %}
+      {% if node.children is defined and node.children %}
+        <ul>{{ loop(node.children | sort(attribute="name")) }}</ul>
+      {% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+</Layout>

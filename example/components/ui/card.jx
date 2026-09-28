@@ -1,0 +1,9 @@
+{# css "/static/card.css" #}
+{# def title="" #}
+<article {{ attrs.render(class="card") }}>
+  {% slot header %}
+    {% if title %}<header class="card-header"><h2>{{ title }}</h2></header>{% endif %}
+  {% endslot %}
+  <div class="card-body">{{ content }}</div>
+  {% slot footer %}{% endslot %}
+</article>

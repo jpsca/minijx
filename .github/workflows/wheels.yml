@@ -1,0 +1,101 @@
+name: wheels
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Publishes to PyPI when a release is created
+  release:
+    types: [released]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: tests (Python ${{ matrix.python }})
+    strategy:
+      matrix:
+        include:
+          - {python: "3.13"}
+          - {python: "3.14"}
+          # Free-threaded. PYTHON_GIL=0 keeps the GIL off even if a
+          # dependency's C extension would turn it back on, so the thread
+          # tests really run in parallel; tests/test_threads.py checks it.
+          - {python: "3.14t", gil: "0"}
+      fail-fast: false
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install FreePascal
+        run: sudo apt-get update && sudo apt-get install -y fpc
+      - name: Run the tests
+        run: |
+          if [ -n "${{ matrix.gil }}" ]; then export PYTHON_GIL=${{ matrix.gil }}; fi
+          make test JX_PYTHON="uv run --python ${{ matrix.python }} --group test python"
+
+  wheel:
+    name: wheel (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: linux-x86_64, os: ubuntu-24.04}
+          - {name: linux-aarch64, os: ubuntu-24.04-arm}
+          - {name: macos-arm64, os: macos-14}
+          # GitHub's last Intel macOS image
+          - {name: macos-x86_64, os: macos-15-intel}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install FreePascal
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y fpc
+          else
+            brew install fpc
+          fi
+          fpc -iV
+      - name: Build the wheel
+        run: uv build --wheel --out-dir dist
+      - name: Test the installed wheel
+        # The oldest supported Python, and the free-threaded one
+        run: |
+          make build  # some tests also run the compiler from build/
+          for py in 3.13 3.14t; do
+            uv venv --python "$py" ".venv-$py"
+            uv pip install --python ".venv-$py/bin/python" dist/*.whl pytest "jinja2>=3.1" "jx>=0.16" hatchling
+            ".venv-$py/bin/minijx" --version
+            if [ "$py" = "3.14t" ]; then export PYTHON_GIL=0; else unset PYTHON_GIL; fi
+            MINIJX_TEST_INSTALLED=1 ".venv-$py/bin/python" -m pytest -q tests
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist/*.whl
+
+  sdist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build --sdist --out-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish:
+    needs: [tests, wheel, sdist]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: astral-sh/setup-uv@v6
+      - run: uv publish dist/*
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.TOKEN_PYPI }}

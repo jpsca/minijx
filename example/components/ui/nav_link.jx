@@ -1,0 +1,6 @@
+{# def href, active=false #}
+{% if active %}
+  {% do attrs.set(aria_current="page") %}
+  {% do attrs.add_class("active") %}
+{% endif %}
+<a href="{{ href }}" {{ attrs.render(class="nav-link") }}>{{ content }}</a>

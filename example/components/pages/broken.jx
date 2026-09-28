@@ -1,0 +1,7 @@
+{# Roto a propósito: la ruta /broken muestra cómo se reporta un error de compilación.
+   El resto de las páginas sigue funcionando. Arréglalo (cierra el paréntesis) y recarga. #}
+{# import "layout.jx" as Layout #}
+{# def #}
+<Layout title="Roto">
+  <p>{{ (1 + 2 }}</p>
+</Layout>

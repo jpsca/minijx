@@ -1,0 +1,42 @@
+{# import "layout.jx" as Layout #}
+{# import "ui/badge.jx" as Badge #}
+{# import "ui/button.jx" as Button #}
+{# def users, q="", sort="name" #}
+<Layout title="Usuarios">
+  <form class="search" method="get" action="/users">
+    <input type="search" name="q" value="{{ q | e }}" placeholder="Buscar por nombre…" autofocus>
+    <select name="sort">
+      {% for key, label in [("name", "Nombre"), ("age", "Edad"), ("role", "Rol")] %}
+        <option value="{{ key }}"{% if key == sort %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <Button type="submit" size="sm">Filtrar</Button>
+  </form>
+
+  <table class="table">
+    <thead><tr><th>#</th><th>Nombre</th><th>Edad</th><th>Rol</th><th>Tags</th></tr></thead>
+    <tbody>
+    {% for u in users | sort(attribute=sort) if q | lower in u.name | lower %}
+      <tr class="{{ loop.cycle('odd', 'even') }}">
+        <td>{{ loop.index }}/{{ loop.length }}</td>
+        <td><a href="/users/{{ u.id }}">{{ u.name }}</a></td>
+        <td>{{ u.age }}{% if u.age is divisibleby 10 %} 🎂{% endif %}</td>
+        <td><Badge text={{ u.role }} tone={{ "blue" if u.role == "admin" else "neutral" }} /></td>
+        <td>{{ u.tags | join(", ") | default("—", true) }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="empty">No hay usuarios que contengan «{{ q | e }}».</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Agrupados por rol</h2>
+  <div class="columns">
+    {% for group in users | groupby("role") %}
+      <section>
+        <h3>{{ group.grouper | capitalize }} <small>({{ group.list | length }})</small></h3>
+        <ul>{% for u in group.list %}<li>{{ u.name }}</li>{% endfor %}</ul>
+      </section>
+    {% endfor %}
+  </div>
+</Layout>

@@ -1,0 +1,20 @@
+{# import "layout.jx" as Layout #}
+{# import "ui/card.jx" as Card #}
+{# import "ui/badge.jx" as Badge #}
+{# import "ui/button.jx" as Button #}
+{# def user #}
+<Layout title={{ user.name }}>
+  <Card>
+    <dl class="details">
+      <dt>Edad</dt><dd>{{ user.age }} ({{ "par" if user.age is even else "impar" }})</dd>
+      <dt>Rol</dt><dd><Badge text={{ user.role }} /></dd>
+      <dt>Bio</dt><dd>{{ user.bio | default("Sin biografía.") | truncate(60) }}</dd>
+      <dt>Palabras en la bio</dt><dd>{{ user.bio | default("") | wordcount }}</dd>
+      <dt>Web</dt>
+      <dd>{% if user.website is defined %}<a href="{{ user.website }}">{{ user.website | replace("https://", "") }}</a>{% else %}—{% endif %}</dd>
+      <dt>Tags</dt><dd>{% for t in user.tags | sort %}<Badge text={{ "#" ~ t }} tone="green" /> {% else %}Sin tags{% endfor %}</dd>
+      <dt>JSON</dt><dd><code>{{ user | tojson }}</code></dd>
+    </dl>
+    {% fill footer %}<footer class="card-footer"><Button href="/users" variant="secondary" size="sm">← Volver</Button></footer>{% endfill %}
+  </Card>
+</Layout>

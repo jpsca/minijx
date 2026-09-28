@@ -1,0 +1,8 @@
+{# def variant="primary", size="md", href="" #}
+{% do attrs.prepend_class("btn", "btn-" ~ variant, "btn-" ~ size) %}
+{% if href %}
+  <a href="{{ href }}" {{ attrs.render() }}>{{ content }}</a>
+{% else %}
+  {% do attrs.setdefault(type="button") %}
+  <button {{ attrs.render() }}>{{ content }}</button>
+{% endif %}

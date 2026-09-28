@@ -1,0 +1,192 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "minijx"
+dynamic = ["version"]
+description = "Jx components compiled to plain Python functions by a fast FreePascal compiler"
+authors = [
+    {name = "Juan Pablo Scaletti", email = "juanpablo@jpscaletti.com"},
+]
+license = "MIT"
+license-files = ["LICENSE"]
+readme = "README.md"
+requires-python = ">=3.13,<4"
+dependencies = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Pascal",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Free Threading :: 3 - Stable",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Text Processing :: Markup :: HTML",
+]
+
+[project.scripts]
+minijx = "minijx.__main__:main"
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "ty",
+]
+test = [
+    "pytest",
+    "tox-uv",
+    "jinja2>=3.1",
+    "jx>=0.16",  # the golden tests compare minijx's output with Jx's
+    "hatchling>=1.26",  # tests of the wheel build hook
+]
+
+[tool.hatch.version]
+path = "src/minijx/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/minijx"]
+# the binary is added by hatch_build.py; a copy left by `make build` must
+# not be picked up as well
+exclude = ["src/minijx/bin"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "compiler/*.pas",
+    "compiler/*.lpr",
+    "src/minijx",
+    "tests",
+    "example",
+    "hatch_build.py",
+    "Makefile",
+    "README.md",
+    "LICENSE",
+]
+exclude = [
+    "src/minijx/bin",
+    "tests/fixtures/**/*.py",
+    "example/components/**/*.py",
+    "**/__pycache__",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ty.src]
+exclude = [
+    "bench",
+    "build",
+    "compiler",
+    "dist",
+    "example",
+    "tests",
+    "hatch_build.py",
+]
+
+
+[tool.tox]
+legacy_tox_ini = """
+[tox]
+env_list =
+    3.13
+    3.14
+    py314t
+
+[testenv]
+runner = uv-venv-lock-runner
+dependency_groups =
+    dev
+    test
+commands =
+    pytest -x src/minijx tests
+"""
+
+
+[tool.ruff]
+line-length = 90
+indent-width = 4
+target-version = "py314"
+exclude = [
+  ".*",
+  "_build",
+  "build",
+  "covreport",
+  "dist",
+]
+include = ["*.py"]
+
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
+
+# Enable auto-formatting of code examples in docstrings. Markdown,
+# reStructuredText code/literal blocks and doctests are all supported.
+#
+# This is currently disabled by default, but it is planned for this
+# to be opt-out in the future.
+docstring-code-format = false
+
+# Set the line length limit used when formatting code snippets in
+# docstrings.
+#
+# This only has an effect when the `docstring-code-format` setting is
+# enabled.
+docstring-code-line-length = "dynamic"
+
+[tool.ruff.lint]
+fixable = ["ALL"]
+
+ignore = [
+	# x is too complex
+	"C901",
+	# whitespace before ':'
+	"E203",
+	"E501",
+	# x defined from star imports
+	"F405",
+	# line break before binary operator
+	"W505",
+	"W605",
+]
+select = [
+	# bugbear
+	"B",
+	# mccabe"", comprehensions, commas
+	"C",
+	# pycodestyle errors
+	"E",
+	# pyflakes
+	"F",
+	# logging format
+	"G",
+	# imports
+	"I",
+	# quotes
+	"Q",
+	# pycodestyle warnings
+	"W",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["minijx"]
+known-local-folder = ["src/minijx"]
+
+# Use two line after imports.
+lines-after-imports = 2

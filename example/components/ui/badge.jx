@@ -1,0 +1,2 @@
+{# def text, tone="neutral" #}
+<span {{ attrs.render(class="badge badge-" ~ tone) }}>{{ text }}</span>

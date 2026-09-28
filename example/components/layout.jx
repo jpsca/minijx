@@ -1,0 +1,31 @@
+{# import "ui/nav_link.jx" as NavLink #}
+{# css "/static/app.css" #}
+{# js "/static/app.js" #}
+{# def title #}
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · {{ site_name }}</title>
+  {{ assets.render() }}
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">{{ site_name }}</a>
+    <nav class="nav">
+      {% for href, label in nav %}
+        <NavLink href={{ href }} active={{ href == current_path or (href != "/" and current_path.startswith(href)) }}>{{ label }}</NavLink>
+      {% endfor %}
+    </nav>
+    <button type="button" class="theme-toggle" data-theme-toggle aria-label="Cambiar tema">◐</button>
+  </header>
+  <main {{ attrs.render(class="container") }}>
+    <h1>{{ title }}</h1>
+    {{ content }}
+  </main>
+  <footer class="footer">
+    {% slot footer %}Renderizado por funciones Python generadas por minijx · {{ components_count }} componentes{% endslot %}
+  </footer>
+</body>
+</html>

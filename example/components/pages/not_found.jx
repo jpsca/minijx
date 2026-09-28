@@ -1,0 +1,7 @@
+{# import "layout.jx" as Layout #}
+{# import "ui/button.jx" as Button #}
+{# def path #}
+<Layout title="No encontrado">
+  <p>No hay nada en <code>{{ path | e }}</code>.</p>
+  <p><Button href="/">Ir al inicio</Button></p>
+</Layout>

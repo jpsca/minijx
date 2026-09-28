@@ -1,0 +1,7 @@
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; }
+.card-header { display: flex; justify-content: space-between; align-items: center; gap: .5rem; padding: .75rem 1rem; border-bottom: 1px solid var(--line); }
+.card-header h2 { margin: 0; font-size: 1.05rem; }
+.card-body { padding: 1rem; flex: 1; }
+.card-body > :first-child { margin-top: 0; }
+.card-footer { padding: .75rem 1rem; border-top: 1px solid var(--line); }
+.card-accent { border-color: var(--accent); }

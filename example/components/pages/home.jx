@@ -1,0 +1,51 @@
+{# import "layout.jx" as Layout #}
+{# import "ui/card.jx" as Card #}
+{# import "ui/button.jx" as Button #}
+{# import "ui/badge.jx" as Badge #}
+{# def users #}
+{% set roles = users | map(attribute="role") | unique | sort | list %}
+<Layout title="Inicio">
+  <p class="lead">
+    Cada página de esta app es un componente <code>.jx</code> compilado a una función
+    Python por <strong>minijx</strong>. El <code>Catalog</code> busca la función por nombre y la ejecuta.
+    Edita cualquier archivo en <code>example/components/</code> y recarga: se recompila solo.
+  </p>
+
+  <div class="grid">
+    <Card title="Usuarios">
+      <p class="stat">{{ users | length }}</p>
+      <p>Edad promedio: {{ ((users | sum(attribute="age")) / (users | length)) | round(1) }}</p>
+      {% fill footer %}<footer class="card-footer"><Button href="/users" size="sm">Ver tabla</Button></footer>{% endfill %}
+    </Card>
+
+    <Card title="Roles">
+      <p>
+        {% for role in roles %}<Badge text={{ role | capitalize }} tone={{ loop.cycle("blue", "green", "amber") }} /> {% endfor %}
+      </p>
+      <p>{{ roles | length }} roles distintos, calculados con <code>map | unique | sort</code>.</p>
+    </Card>
+
+    <Card class="card-accent">
+      {% fill header %}<header class="card-header"><h2>Slots</h2><Badge text="custom header" tone="amber" /></header>{% endfill %}
+      <p>Este header viene de un <code>{% raw %}{% fill header %}{% endraw %}</code> y reemplaza al default del componente.</p>
+    </Card>
+  </div>
+
+  <h2>Botones</h2>
+  <p class="row">
+    {% for variant in ["primary", "secondary", "danger"] %}
+      <Button variant={{ variant }} data-variant={{ variant }}>{{ variant | title }}</Button>
+    {% endfor %}
+    <Button variant="secondary" disabled>Deshabilitado</Button>
+    <Button href="/filters" variant="link">Ver filtros →</Button>
+  </p>
+
+  <h2>Más ejemplos</h2>
+  <ul>
+    <li><a href="/users?q=an">Búsqueda con <code>for … if …</code> y <code>for … else</code></a></li>
+    <li><a href="/users/1">Detalle con <code>default</code> e <code>is defined</code></a></li>
+    <li><a href="/tree">Árbol con <code>for … recursive</code></a></li>
+    <li><a href="/sitemap.xml">sitemap.xml</a>, compilado desde <code>sitemap.xml.jx</code> a <code>sitemap_xml.py</code></li>
+    <li><a href="/broken">Un componente con error de sintaxis</a></li>
+  </ul>
+</Layout>
