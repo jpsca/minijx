@@ -189,7 +189,7 @@ make dist         # the wheel for this platform and the sdist, in dist/
 
 `make test` uses `../jx/.venv/bin/python`, a Python with `jx`, `jinja2` and `pytest`. `make test JX_PYTHON="uv run --group test python"` uses the test dependencies from `pyproject.toml` instead, with Jx from PyPI.
 
-The wheel build (`hatch_build.py`) compiles the binary with `fpc`, or takes it from `$MINIJX_BINARY`, checks that its version and module format match the runtime's, and tags the wheel `py3-none-<platform>`. The version is only written in `src/minijx/__init__.py`: the Makefile and the wheel build pass it to `fpc` in `$MINIJX_VERSION`. The `fpc` options are in `compiler/minijx.cfg`, which both use.
+The wheel build (`hatch_build.py`) compiles the binary with `fpc`, or takes it from `$MINIJX_BINARY`, checks that its version and module format match the runtime's, and tags the wheel `py3-none-<platform>`. The version is only written in `pyproject.toml` (`uv version --bump patch` changes it): the Makefile and the wheel build pass it to `fpc` in `$MINIJX_VERSION`, and `minijx.__version__` reads it from the package metadata, or from `pyproject.toml` in a source checkout. The `fpc` options are in `compiler/minijx.cfg`, which both use.
 
 `MINIJX_TEST_INSTALLED=1` makes the tests import the installed package instead of `src/`, to test a wheel. On a free-threaded Python, run the tests with `PYTHON_GIL=0`: the concurrency tests then run truly in parallel, and one of them fails if something turned the GIL back on.
 

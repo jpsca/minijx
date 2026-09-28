@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "minijx"
-dynamic = ["version"]
+version = "0.1.0"
 description = "Jx components compiled to plain Python functions by a fast FreePascal compiler"
 authors = [
     {name = "Juan Pablo Scaletti", email = "juanpablo@jpscaletti.com"},
@@ -45,9 +45,6 @@ test = [
     "jx>=0.16",  # the golden tests compare minijx's output with Jx's
     "hatchling>=1.26",  # tests of the wheel build hook
 ]
-
-[tool.hatch.version]
-path = "src/minijx/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/minijx"]

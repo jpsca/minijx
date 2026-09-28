@@ -22,6 +22,13 @@ def run_module(*args):
     return subprocess.run([sys.executable, "-m", "minijx", *args], capture_output=True, text=True, env=env)
 
 
+def test_version_comes_from_pyproject():
+    import tomllib
+
+    project = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]
+    assert minijx.__version__ == project["version"]
+
+
 def test_versions_match():
     """The binary gets its version from the package when it is built."""
     source = (REPO / "compiler" / "mjcompiler.pas").read_text()

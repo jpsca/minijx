@@ -38,7 +38,7 @@ const
         catalog can replace with its own. *)
   ModuleFormat = 5;
   (* Taken from $MINIJX_VERSION when compiling, which the Makefile and the
-     wheel build set from `__version__` in src/minijx/__init__.py, so the
+     wheel build set from `version` in pyproject.toml, so the
      version lives in one place. Empty if fpc is run without it. *)
   MinijxVersion = {$I %MINIJX_VERSION%};
 
