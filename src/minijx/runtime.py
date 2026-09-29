@@ -171,6 +171,21 @@ class InvalidPropType(TypeError):
     got a value of another type. Same message as Jx's."""
 
 
+def merge_attrs(attrs: t.Any, explicit: dict[str, t.Any]) -> dict[str, t.Any]:
+    """
+    `<Comp attrs={{ attrs }} x=1 />`, as Jx: the forwarded attributes
+    (`Attrs` or a dict) and the explicit ones, which win. The component
+    takes the ones it declares as arguments; the rest are its `attrs`.
+    """
+    if isinstance(attrs, Attrs):
+        base = attrs.as_dict
+    elif attrs:
+        base = dict(attrs)
+    else:
+        base = {}
+    return {**base, **explicit}
+
+
 def invalid_prop(component: str, arg: str, expected: type, value: t.Any) -> t.NoReturn:
     raise InvalidPropType(
         f"{component}: `{arg}` expected {expected.__name__}, got {type(value).__name__}"
@@ -200,6 +215,6 @@ from .loop import Loop  # noqa: E402
 
 
 __all__ = [
-    "NO_TAGS", "UNDEFINED", "InvalidPropType", "invalid_prop", "Attrs", "Loop", "Markup", "concat", "escape", "escape_output", "getattr_",
+    "NO_TAGS", "UNDEFINED", "InvalidPropType", "invalid_prop", "merge_attrs", "Attrs", "Loop", "Markup", "concat", "escape", "escape_output", "getattr_",
     "getitem", "has_attr", "mconcat", "soft_str",
 ]

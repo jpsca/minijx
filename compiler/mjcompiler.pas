@@ -50,8 +50,10 @@ const
         and COMPONENTS, the function of each component.
      8: annotations are not evaluated (`from __future__ import annotations`),
         builtin types are checked, and defaults that are not literals are
-        evaluated on each call. *)
-  ModuleFormat = 8;
+        evaluated on each call.
+     9: `attrs=` on a component call fills its declared arguments too, as Jx
+        (`_merge_attrs`). *)
+  ModuleFormat = 9;
   (* Taken from $MINIJX_VERSION when compiling, which the Makefile and the
      wheel build set from `version` in pyproject.toml, so the
      version lives in one place. Empty if fpc is run without it. *)
@@ -400,7 +402,7 @@ begin
        name types this module does not import (`user: User`) *)
     Emit('from __future__ import annotations'#10);
     Emit('from minijx.runtime import UNDEFINED, Attrs, Loop, concat, escape, getattr_, getitem, has_attr, mconcat'#10);
-    Emit('from minijx.runtime import Markup as _M, NO_TAGS as _NO_TAGS, escape_output as _e, invalid_prop as _invalid_prop'#10);
+    Emit('from minijx.runtime import Markup as _M, NO_TAGS as _NO_TAGS, escape_output as _e, invalid_prop as _invalid_prop, merge_attrs as _merge_attrs'#10);
     Emit('from minijx.filters import FILTERS as _FILTERS, FILTERS_AE as _FILTERS_AE'#10);
     Emit('from minijx.tests import TESTS as _TESTS'#10);
     Emit(#10'_s = str'#10#10);

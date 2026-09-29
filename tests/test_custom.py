@@ -98,3 +98,43 @@ def test_inline_tests_cannot_be_replaced(tmp_path):
 def test_filters_must_be_callable(tmp_path):
     with pytest.raises(TypeError, match="'shout' is not callable"):
         Catalog(tmp_path, filters={"shout": "nope"})
+
+
+# Forwarding `attrs`, as Jx: its values also fill the declared arguments
+
+
+def test_forwarded_attrs_fill_the_declared_arguments(project):
+    """The layout pattern: a page passes `title` to a layout that forwards
+    its `attrs` to the base layout, which declares `title`."""
+    project.write({
+        "base.jx": "{# def title='' #}<title>{{ title or 'Site' }}</title><body {{ attrs.render() }}>{{ content }}</body>",
+        "auth.jx": '{# import "base.jx" as Base #}{% do attrs.set(class="auth") %}<Base attrs={{ attrs }}><main>{{ content }}</main></Base>',
+        "page.jx": '{# import "auth.jx" as Auth #}<Auth title="Sign in" data-x="1">form</Auth>',
+    })
+    project.assert_same("page.jx")
+
+
+def test_explicit_arguments_win_over_forwarded_ones(project):
+    project.write({
+        "card.jx": "{# def title, size='md' #}<b {{ attrs.render(class='card') }}>{{ title }} {{ size }}</b>",
+        "wrap.jx": '{# import "card.jx" as Card #}<Card attrs={{ attrs }} size="lg" />',
+        "page.jx": '{# import "wrap.jx" as Wrap #}<Wrap title="T" size="sm" class="big" disabled />',
+    })
+    project.assert_same("page.jx")
+
+
+def test_forwarded_dict(project):
+    project.write({
+        "card.jx": "{# def title #}<b {{ attrs.render() }}>{{ title }}</b>",
+        "page.jx": '{# import "card.jx" as Card #}{# def extra #}<Card attrs={{ extra }} />',
+    })
+    project.assert_same("page.jx", extra={"title": "T", "data-id": "7"})
+
+
+def test_attrs_given_to_catalog_render(project):
+    project.write({"card.jx": "{# def title #}<b {{ attrs.render() }}>{{ title }}</b>"})
+    assert project.compile().returncode == 0
+    catalog = Catalog(project.mini, compiler=False, autoescape=project.autoescape)
+    mini = catalog.render("card.jx", attrs={"title": "T", "class": "x"})
+    jx = project.render_jx("card.jx", attrs={"title": "T", "class": "x"})
+    assert mini == str(jx) == '<b class="x">T</b>'

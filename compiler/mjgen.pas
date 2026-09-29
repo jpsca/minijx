@@ -749,7 +749,7 @@ var
   Dep: TComponent;
   i: Integer;
   A: TAttr;
-  Args, Kw, Fills, Call, Id, FillId, Name, Value: string;
+  Args, Kw, Fills, Call, Id, FillId, Name, Value, Spread: string;
   FillScope: TScope;
   F: TNode;
   HasContent, Plain: Boolean;
@@ -793,6 +793,7 @@ begin
      a name the function itself uses, to keep what that does as it was. (The
      lexer already refused repeated names.) *)
   Plain := True;
+  Spread := '';
   for i := 0 to High(N.Attrs) do
     if InList(ReplaceChar(N.Attrs[i].Name, '-', '_'), ['content', '_globals', '_fills']) then
       Plain := False;
@@ -808,15 +809,41 @@ begin
     else
       Value := Expr(A.Value, A.ValuePos, Scope);
     end;
-    if Plain and IsPyIdentifier(Name) then
+    if Name = 'attrs' then
+      Spread := Value
+    else if Plain and IsPyIdentifier(Name) then
       Args := Args + Name + '=' + Value + ', '
     else
       Kw := Kw + PyStr(Name) + ': ' + Value + ', ';
   end;
 
-  Call := Dep.FuncName + '(' + Args;
-  if Kw <> '' then
-    Call := Call + '**{' + Copy(Kw, 1, Length(Kw) - 2) + '}, ';
+  if Spread <> '' then
+  begin
+    (* `attrs={{ attrs }}`, as Jx: the forwarded attributes also fill the
+       arguments the component declares, and the explicit ones win *)
+    Kw := '';
+    for i := 0 to High(N.Attrs) do
+    begin
+      A := N.Attrs[i];
+      Name := ReplaceChar(A.Name, '-', '_');
+      if Name = 'attrs' then
+        Continue;
+      case A.Kind of
+        akFlag: Value := 'True';
+        akString: Value := A.Value;
+      else
+        Value := Expr(A.Value, A.ValuePos, Scope);
+      end;
+      Kw := Kw + PyStr(Name) + ': ' + Value + ', ';
+    end;
+    Call := Dep.FuncName + '(**_merge_attrs(' + Spread + ', {' + Kw + '}), ';
+  end
+  else
+  begin
+    Call := Dep.FuncName + '(' + Args;
+    if Kw <> '' then
+      Call := Call + '**{' + Copy(Kw, 1, Length(Kw) - 2) + '}, ';
+  end;
   if HasContent then
     (* The content is written by the template author, not data, so it is
        markup for a component with autoescape whatever the mode of this
