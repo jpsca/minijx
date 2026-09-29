@@ -26,14 +26,32 @@ type
   TScope = class
   private
     FNames: TStringList;
+    FPyNames: TStringList; (* `name=python name` for the names Bind renamed *)
+    FRenamed: Integer;     (* on the root scope: renames given out, for unique names *)
   public
     Parent: TScope;
     LoopVar: string;   (* Python name the template's `loop` refers to, '' if none *)
     LoopUsed: Boolean; (* set on the scope that owns LoopVar when `loop` is used *)
+    (* the scope is the body of a nested Python function (a fill, the body of
+       a custom tag, a recursive loop): an assignment in it makes a local of
+       that function *)
+    IsFunc: Boolean;
+    IsMacro: Boolean; (* the body of a macro *)
     constructor Create(AParent: TScope);
+    (* inside the body of a macro, at any depth *)
+    function InMacro: Boolean;
     destructor Destroy; override;
     procedure Add(const Name: string);
     function IsLocal(const Name: string): Boolean;
+    (* The Python name a template name refers to here: itself, or the name
+       Bind gave it. *)
+    function PyName(const Name: string): string;
+    (* Bind a name assigned in this scope (`set`, a for target) and return
+       the Python name to assign. In a nested function, a name the outer
+       function has is renamed: otherwise Python would make it local to the
+       whole nested function, and reading the outer value before the
+       assignment would raise UnboundLocalError. *)
+    function Bind(const Name: string): string;
     (* the innermost scope with a loop variable, or nil *)
     function LoopScope: TScope;
   end;
@@ -136,22 +154,42 @@ type
     (* the expression calls a filter / a test looked up by name *)
     UsesFilters: Boolean;
     UsesTests: Boolean;
+    (* set by the caller: the component is compiled with autoescape, so
+       `a ~ b` keeps markup, as Jinja's `markup_join` *)
+    Autoescape: Boolean;
     constructor Create(const AFile, AFileSrc, ASrc: string; ABase: Integer;
       AScope: TScope);
     destructor Destroy; override;
     (* Translate the whole source as one expression. *)
     function Translate: string;
+    (* The same, for a `{{ }}`. Safe: the value never needs escaping (a
+       number, True/False/None) or it is the result of a filter trusted to
+       return markup (`e`, `escape`, `forceescape`, `safe`). *)
+    function TranslateOutput(out Safe: Boolean): string;
     (* `a, b` or `(a, b)` or `a`: Python target plus the names it binds. *)
     function TranslateTarget(out Names: TStringArray): string;
-    (* For `{% for target in iter [if cond] [recursive] %}`. *)
+    (* For `{% for target in iter [if cond] [recursive] %}`. The target
+       names are bound in BodyScope (a recursive loop's body is a function
+       of its own), and Target uses their Python names. *)
     procedure TranslateFor(out Target: string; out Names: TStringArray;
-      out Iter: string; out Cond: string; out Recursive: Boolean; IterScope: TScope);
+      out Iter: string; out Cond: string; out Recursive: Boolean;
+      IterScope, BodyScope: TScope);
     (* For `{% set name = expr %}`. *)
     procedure TranslateSet(out Name: string; out Value: string);
     (* `{% filter upper|replace("a", "b") %}` applied to Subject. *)
     function TranslateFilterChain(const Subject: string): string;
-    (* `{% call fn(args) %}`: the Python call with Body as first argument. *)
-    function TranslateCallBlock(const Body: string): string;
+    (* The arguments of a custom tag, `(a, b=1)`, as a Python argument list. *)
+    function TranslateTagArgs: string;
+    (* The Python type of the expression if it is a literal (`"x"` -> str,
+       `3` -> int, `-1.5` -> float, `true` -> bool, `none` -> NoneType,
+       `[..]` -> list, `{..}` -> dict, `(a, b)` -> tuple), else ''. *)
+    function LiteralType: string;
+    (* `name(a, b=default)` of a macro. The parameters are added to
+       MacroScope, and each default is Python code evaluated there ('' for
+       none), so it can use the parameters before it and the variables of
+       the component, when the macro is called, as in Jinja. *)
+    procedure TranslateMacroSig(MacroScope: TScope; out Name: string;
+      out Params, Defaults: TStringArray);
   end;
 
 const
@@ -171,12 +209,78 @@ begin
   FNames.Sorted := True;
   FNames.Duplicates := dupIgnore;
   FNames.CaseSensitive := True;
+  FPyNames := TStringList.Create;
 end;
 
 destructor TScope.Destroy;
 begin
   FNames.Free;
+  FPyNames.Free;
   inherited;
+end;
+
+function TScope.InMacro: Boolean;
+var
+  S: TScope;
+begin
+  S := Self;
+  while S <> nil do
+  begin
+    if S.IsMacro then
+      Exit(True);
+    S := S.Parent;
+  end;
+  Result := False;
+end;
+
+function TScope.PyName(const Name: string): string;
+var
+  S: TScope;
+  i: Integer;
+begin
+  S := Self;
+  while S <> nil do
+  begin
+    if S.FNames.IndexOf(Name) >= 0 then
+    begin
+      i := S.FPyNames.IndexOfName(Name);
+      if i >= 0 then
+        Exit(S.FPyNames.ValueFromIndex[i]);
+      Exit(Name);
+    end;
+    S := S.Parent;
+  end;
+  Result := Name;
+end;
+
+function TScope.Bind(const Name: string): string;
+var
+  S, Func, Root: TScope;
+begin
+  (* the scopes of the Python function this one is in *)
+  Func := Self;
+  while (Func.Parent <> nil) and not Func.IsFunc do
+    Func := Func.Parent;
+  S := Self;
+  while S <> Func.Parent do
+  begin
+    if S.FNames.IndexOf(Name) >= 0 then
+      Exit(S.PyName(Name)); (* assigned before in this function *)
+    S := S.Parent;
+  end;
+  if Func.IsFunc and (Func.Parent <> nil) and Func.Parent.IsLocal(Name) then
+  begin
+    Root := Self;
+    while Root.Parent <> nil do
+      Root := Root.Parent;
+    Inc(Root.FRenamed);
+    Result := '_' + Name + '_' + IntToStr(Root.FRenamed);
+    FNames.Add(Name);
+    FPyNames.Add(Name + '=' + Result);
+    Exit;
+  end;
+  FNames.Add(Name);
+  Result := Name;
 end;
 
 procedure TScope.Add(const Name: string);
@@ -873,10 +977,13 @@ begin
     UsesLoop := True;
     Exit(S.LoopVar);
   end;
+  if InList(E.Value, ['caller', 'varargs', 'kwargs']) and FScope.InMacro
+    and not FScope.IsLocal(E.Value) then
+    Fail(E.Pos, '`' + E.Value + '` is not supported in minijx macros');
   if IsGlobal(E) then
     Result := '_globals[' + PyStr(E.Value) + ']'
   else
-    Result := E.Value;
+    Result := FScope.PyName(E.Value);
 end;
 
 (* The arguments of a call as Python. Keyword arguments named like a Python
@@ -1033,7 +1140,11 @@ begin
         case E.Kind of
           ekList: Result := '[' + Result + ']';
           ekDict: Result := '{' + Result + '}';
-          ekConcat: Result := 'concat(' + Result + ')';
+          ekConcat:
+            if Autoescape then
+              Result := 'mconcat(' + Result + ')'
+            else
+              Result := 'concat(' + Result + ')';
         else
           if Length(E.Items) = 1 then
             Result := '(' + Result + ',)'
@@ -1105,6 +1216,17 @@ begin
   Result := Gen(E);
 end;
 
+function TExprTranslator.TranslateOutput(out Safe: Boolean): string;
+var
+  E: TExpr;
+begin
+  E := ParseExpression;
+  ParseEnd('');
+  Safe := (E.Kind = ekConst) or
+    ((E.Kind = ekFilter) and InList(E.Value, ['e', 'escape', 'forceescape', 'safe']));
+  Result := Gen(E);
+end;
+
 function TExprTranslator.TranslateTarget(out Names: TStringArray): string;
 var
   N: Integer;
@@ -1154,13 +1276,13 @@ begin
 end;
 
 procedure TExprTranslator.TranslateFor(out Target: string; out Names: TStringArray;
-  out Iter: string; out Cond: string; out Recursive: Boolean; IterScope: TScope);
+  out Iter: string; out Cond: string; out Recursive: Boolean;
+  IterScope, BodyScope: TScope);
 var
   IterExpr, CondExpr: TExpr;
-  BodyScope: TScope;
   i: Integer;
 begin
-  Target := TranslateTarget(Names);
+  TranslateTarget(Names);
   if not IsName('in') then
     Fail(FTokPos, 'Expected `in`');
   Next;
@@ -1176,22 +1298,35 @@ begin
     Next;
   ParseEnd(' in for statement');
 
-  (* the iterable is resolved in the enclosing scope, the condition where
-     the loop variables are bound *)
+  (* the iterable is resolved in the enclosing scope *)
   FScope := IterScope;
   Iter := Gen(IterExpr);
+
+  (* the target, in the body's scope: a recursive loop's body is a function *)
+  BodyScope.IsFunc := Recursive;
+  if Length(Names) = 1 then
+    Target := BodyScope.Bind(Names[0])
+  else
+  begin
+    Target := '(';
+    for i := 0 to High(Names) do
+    begin
+      if i > 0 then
+        Target := Target + ', ';
+      Target := Target + BodyScope.Bind(Names[i]);
+    end;
+    Target := Target + ')';
+  end;
+
+  (* the condition, where the loop variables are bound *)
   Cond := '';
   if CondExpr <> nil then
   begin
-    BodyScope := TScope.Create(IterScope);
+    FScope := BodyScope;
     try
-      for i := 0 to High(Names) do
-        BodyScope.Add(Names[i]);
-      FScope := BodyScope;
       Cond := Gen(CondExpr);
     finally
       FScope := IterScope;
-      BodyScope.Free;
     end;
   end;
 end;
@@ -1238,28 +1373,116 @@ begin
     Result := FilterCall(Chain[i].Value, Result, GenArgs(Chain[i]));
 end;
 
-(* `{% call fn %}` -> `fn(Body)`; `{% call obj.fn(1, x=2) %}` ->
-   `getattr_(obj, 'fn')(Body, 1, x=2)`. Like `{% filter %}`, but the
-   callable is a variable, and the rendered body goes first. *)
-function TExprTranslator.TranslateCallBlock(const Body: string): string;
+(* `(a, b=1)` -> `a, b=1`; `()` -> ''. The generator wraps the arguments
+   written without parentheses (`{% cache a, b=1 %}`) in them. *)
+function TExprTranslator.TranslateTagArgs: string;
 var
   E: TExpr;
-  Args: string;
 begin
-  if FTokKind = xkEOF then
-    Fail(FTokPos, '`{% call %}` needs something to call');
-  E := ParsePostfix(ParsePrimary);
-  ParseEnd(' in call statement; expected `name` or `name(args)`');
-  if E.Kind = ekCall then
+  E := Node(ekCall, FTokPos);
+  if not ParseCallArgs(E) then
+    Fail(FTokPos, 'Expected `(`');
+  ParseEnd(' in the arguments of the tag');
+  Result := GenArgs(E);
+end;
+
+procedure TExprTranslator.TranslateMacroSig(MacroScope: TScope; out Name: string;
+  out Params, Defaults: TStringArray);
+var
+  E: TExpr;
+  A: TCallArg;
+  i, j: Integer;
+  SeenDefault: Boolean;
+  Outer: TScope;
+begin
+  if FTokKind <> xkName then
+    Fail(FTokPos, 'Expected the name of the macro');
+  Name := FTokVal;
+  if IsPyKeyword(Name) then
+    Fail(FTokPos, '`' + Name + '` cannot be the name of a macro');
+  Next;
+  E := Node(ekCall, FTokPos);
+  if not ParseCallArgs(E) then
+    Fail(FTokPos, 'Expected `(` after the name of the macro');
+  ParseEnd(' in macro statement');
+
+  SetLength(Params, Length(E.Args));
+  SetLength(Defaults, Length(E.Args));
+  SeenDefault := False;
+  for i := 0 to High(E.Args) do
   begin
-    Args := GenArgs(E);
-    Result := Gen(E.Items[0]) + '(' + Body;
-    if Args <> '' then
-      Result := Result + ', ' + Args;
-    Result := Result + ')';
-  end
-  else
-    Result := Gen(E) + '(' + Body + ')';
+    A := E.Args[i];
+    case A.Kind of
+      akPositional:
+        begin
+          if A.Value.Kind <> ekName then
+            Fail(A.Value.Pos, 'A macro parameter is a name, or `name=default`');
+          if SeenDefault then
+            Fail(A.Value.Pos, 'A parameter without a default cannot follow one with a default');
+          Params[i] := A.Value.Value;
+          Defaults[i] := '';
+        end;
+      akKeyword:
+        begin
+          SeenDefault := True;
+          Params[i] := A.Name;
+        end;
+    else
+      Fail(A.Value.Pos, 'minijx macros do not take `*args` or `**kwargs`');
+    end;
+    if IsPyKeyword(Params[i]) then
+      Fail(A.Value.Pos, '`' + Params[i] + '` cannot be the name of a parameter');
+    for j := 0 to i - 1 do
+      if Params[j] = Params[i] then
+        Fail(A.Value.Pos, 'Duplicate parameter `' + Params[i] + '`');
+  end;
+  for i := 0 to High(Params) do
+    MacroScope.Add(Params[i]);
+
+  Outer := FScope;
+  FScope := MacroScope;
+  try
+    for i := 0 to High(E.Args) do
+      if E.Args[i].Kind = akKeyword then
+        Defaults[i] := Gen(E.Args[i].Value);
+  finally
+    FScope := Outer;
+  end;
+end;
+
+function TExprTranslator.LiteralType: string;
+var
+  E: TExpr;
+
+  function NumberType(const V: string): string;
+  begin
+    if (Pos('.', V) > 0) or (Pos('e', V) > 0) or (Pos('E', V) > 0) then
+      Result := 'float'
+    else
+      Result := 'int';
+  end;
+
+begin
+  E := ParseExpression;
+  ParseEnd('');
+  Result := '';
+  case E.Kind of
+    ekStr: Result := 'str';
+    ekList: Result := 'list';
+    ekDict: Result := 'dict';
+    ekTuple: Result := 'tuple';
+    ekConst:
+      if (E.Value = 'True') or (E.Value = 'False') then
+        Result := 'bool'
+      else if E.Value = 'None' then
+        Result := 'NoneType'
+      else if (E.Value <> '') and (E.Value[1] in ['0'..'9', '.']) then
+        Result := NumberType(E.Value);
+    ekUnary:
+      if (E.Items[0].Kind = ekConst) and (E.Items[0].Value <> '') and
+        (E.Items[0].Value[1] in ['0'..'9', '.']) then
+        Result := NumberType(E.Items[0].Value);
+  end;
 end;
 
 end.

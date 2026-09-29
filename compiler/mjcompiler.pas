@@ -19,15 +19,23 @@ type
     FRoots: TStringArray; (* absolute, with a trailing separator *)
     FCache: TStringList;  (* absolute path -> TComponent *)
     FNames: TStringList;  (* function names already given out *)
+    FAutoescape: TStringList; (* extensions compiled with autoescape, sorted *)
+    FTags: TStringList;       (* custom tag names, sorted *)
+    FOutput: string;          (* where the modules go; '' for next to each .jx *)
+    FOutNames: TStringArray;  (* with FOutput: the subfolder of each root *)
+    function IsAutoescaped(const Path: string): Boolean;
     function ResolveImport(C: TComponent; const D: TImportDecl; out RootIdx: Integer): string;
     function MangledName(const Path: string; RootIdx: Integer): string;
   public
-    constructor Create(const ARoots: TStringArray);
+    constructor Create(const ARoots, AAutoescape, ATags: TStringArray;
+      const AOutput: string = '');
+    (* Where the module of a .jx found in the root RootIdx goes. *)
+    function ModulePath(const JxPath: string; RootIdx: Integer): string;
     destructor Destroy; override;
     (* Load and resolve a component and everything it imports. *)
     function Load(const Path: string; RootIdx: Integer): TComponent;
-    (* The full Python module for a component. *)
-    function CompileModule(C: TComponent): string;
+    (* The full Python module for a component, to be written at OutPath. *)
+    function CompileModule(C: TComponent; const OutPath: string): string;
   end;
 
 const
@@ -35,8 +43,15 @@ const
      src/minijx/catalog.py. 3: CSS/JS are plain URLs (2 had pairs).
      4: `|default` receives UNDEFINED, not None, for a missing value.
      5: filters and tests are looked up in dicts (`_f["name"]`), which the
-        catalog can replace with its own. *)
-  ModuleFormat = 5;
+        catalog can replace with its own.
+     6: autoescape; the module declares AUTOESCAPE and ESCAPED; custom tags,
+        declared in TAGS.
+     7: LINEMAP, where each line of the module comes from in the templates,
+        and COMPONENTS, the function of each component.
+     8: annotations are not evaluated (`from __future__ import annotations`),
+        builtin types are checked, and defaults that are not literals are
+        evaluated on each call. *)
+  ModuleFormat = 8;
   (* Taken from $MINIJX_VERSION when compiling, which the Makefile and the
      wheel build set from `version` in pyproject.toml, so the
      version lives in one place. Empty if fpc is run without it. *)
@@ -45,6 +60,11 @@ const
 (* `dir/sitemap.xml.jx` -> `dir/sitemap_xml.py`: the `.jx` is dropped and any
    other dot in the file name becomes `_`, so the module is importable. *)
 function OutputPath(const JxPath: string): string;
+
+(* The subfolder of the output folder for each root: its name, with `-2`,
+   `-3`... when an earlier root has the same one. Must match
+   `output_names` in src/minijx/catalog.py. *)
+function OutputNames(const Roots: TStringArray): TStringArray;
 
 implementation
 
@@ -58,13 +78,61 @@ begin
   Result := ExtractFilePath(JxPath) + ReplaceChar(Name, '.', '_') + '.py';
 end;
 
-constructor TCompiler.Create(const ARoots: TStringArray);
+function OutputNames(const Roots: TStringArray): TStringArray;
+var
+  i, j, N: Integer;
+  Base, Name: string;
+  Taken: Boolean;
+begin
+  SetLength(Result, Length(Roots));
+  for i := 0 to High(Roots) do
+  begin
+    Base := ExtractFileName(ExcludeTrailingPathDelimiter(Roots[i]));
+    if Base = '' then
+      Base := 'root';
+    Name := Base;
+    N := 1;
+    repeat
+      Taken := False;
+      for j := 0 to i - 1 do
+        if Result[j] = Name then
+          Taken := True;
+      if Taken then
+      begin
+        Inc(N);
+        Name := Base + '-' + IntToStr(N);
+      end;
+    until not Taken;
+    Result[i] := Name;
+  end;
+end;
+
+constructor TCompiler.Create(const ARoots, AAutoescape, ATags: TStringArray;
+  const AOutput: string = '');
 var
   i: Integer;
 begin
   SetLength(FRoots, Length(ARoots));
   for i := 0 to High(ARoots) do
     FRoots[i] := IncludeTrailingPathDelimiter(ExpandFileName(ARoots[i]));
+  FAutoescape := TStringList.Create;
+  FAutoescape.Sorted := True;
+  FAutoescape.Duplicates := dupIgnore;
+  FAutoescape.CaseSensitive := True;
+  for i := 0 to High(AAutoescape) do
+    FAutoescape.Add(AAutoescape[i]);
+  FTags := TStringList.Create;
+  FTags.Sorted := True;
+  FTags.Duplicates := dupIgnore;
+  FTags.CaseSensitive := True;
+  for i := 0 to High(ATags) do
+    FTags.Add(ATags[i]);
+  FOutput := '';
+  if AOutput <> '' then
+  begin
+    FOutput := IncludeTrailingPathDelimiter(ExpandFileName(AOutput));
+    FOutNames := OutputNames(FRoots);
+  end;
   FCache := TStringList.Create;
   FCache.Sorted := True;
   FCache.CaseSensitive := True;
@@ -81,7 +149,28 @@ begin
     FCache.Objects[i].Free;
   FCache.Free;
   FNames.Free;
+  FAutoescape.Free;
+  FTags.Free;
   inherited;
+end;
+
+(* The extension that decides autoescape is the one before `.jx`, or `jx`
+   when there is none: `card.jx` -> jx, `page.html.jx` -> html,
+   `mail.txt.jx` -> txt. *)
+function TCompiler.IsAutoescaped(const Path: string): Boolean;
+var
+  Name, Ext: string;
+  P: Integer;
+begin
+  Name := ExtractFileName(Path);
+  if EndsWith(Name, '.jx') then
+    Delete(Name, Length(Name) - 2, 3);
+  P := LastDelimiter('.', Name);
+  if P > 0 then
+    Ext := LowerCase(Copy(Name, P + 1, MaxInt))
+  else
+    Ext := 'jx';
+  Result := FAutoescape.IndexOf(Ext) >= 0;
 end;
 
 (* `_c_<rel path>`, unique across the run: `a/b.jx` and `a_b.jx` would both
@@ -180,11 +269,16 @@ begin
   C.RootIdx := RootIdx;
   C.FuncName := MangledName(Abs, RootIdx);
   C.UsesAttrs := Pos('attrs', Src) > 0;
+  C.Autoescape := IsAutoescaped(Abs);
+  C.RelPath := Abs;
+  if StartsWith(C.RelPath, FRoots[RootIdx]) then
+    Delete(C.RelPath, 1, Length(FRoots[RootIdx]));
+  C.RelPath := ReplaceChar(C.RelPath, '\', '/');
   (* registered before its imports are resolved, so cycles (a component
      importing itself, too) end *)
   FCache.AddObject(Abs, C);
   try
-    C.Doc := ParseDocument(Abs, Src);
+    C.Doc := ParseDocument(Abs, Src, FTags);
     C.Args := ParseDefArgs(C.Doc);
     SetLength(C.Deps, Length(C.Doc.Imports));
     for i := 0 to High(C.Doc.Imports) do
@@ -204,13 +298,53 @@ begin
   Result := C;
 end;
 
-function TCompiler.CompileModule(C: TComponent): string;
+function TCompiler.ModulePath(const JxPath: string; RootIdx: Integer): string;
+var
+  Rel: string;
+begin
+  if FOutput = '' then
+    Exit(OutputPath(JxPath));
+  Rel := JxPath;
+  if StartsWith(Rel, FRoots[RootIdx]) then
+    Delete(Rel, 1, Length(FRoots[RootIdx]));
+  Result := OutputPath(FOutput + FOutNames[RootIdx] + PathDelim + Rel);
+end;
+
+(* 1-based line and 0-based byte column of the 1-based offset Pos in Src *)
+procedure LineCol(const Src: string; Pos: Integer; out ALine, ACol: Integer);
+var
+  i, LineStart: Integer;
+begin
+  ALine := 1;
+  LineStart := 1;
+  for i := 1 to Pos - 1 do
+    if (i <= Length(Src)) and (Src[i] = #10) then
+    begin
+      Inc(ALine);
+      LineStart := i + 1;
+    end;
+  ACol := Pos - LineStart;
+end;
+
+function TCompiler.CompileModule(C: TComponent; const OutPath: string): string;
 var
   Order: array of TComponent;
   Visited, Css, Js, Srcs: TStringList;
-  Out: TBuf;
-  Counter, i: Integer;
+  Out, LineMap, Funcs: TBuf;
+  Counter, i, k, Lines, FuncLine, JxLine, JxCol, EndLine, EndCol: Integer;
   G: TFuncGen;
+  Code: string;
+  M: TSrcMapArray;
+
+  procedure Emit(const S: string);
+  var
+    j: Integer;
+  begin
+    Out.Add(S);
+    for j := 1 to Length(S) do
+      if S[j] = #10 then
+        Inc(Lines);
+  end;
 
   procedure Visit(X: TComponent);
   var
@@ -250,38 +384,81 @@ begin
   Js := TStringList.Create;
   Srcs := TStringList.Create;
   Out := TBuf.Create;
+  LineMap := TBuf.Create;
+  Funcs := TBuf.Create;
+  Lines := 0;
   try
     Visit(C);
     (* every .jx copied into this module, relative to it, so a catalog can
        tell the module is stale when any of them changes *)
     for i := 0 to High(Order) do
-      Srcs.Add(ExtractRelativePath(ExtractFilePath(C.Path), Order[i].Path));
+      Srcs.Add(ReplaceChar(
+        ExtractRelativePath(ExtractFilePath(OutPath), Order[i].Path), '\', '/'));
 
-    Out.Add('# Generated by minijx from ' + ExtractFileName(C.Path) + '. Do not edit.'#10);
-    Out.Add('from minijx.runtime import UNDEFINED, Attrs, Loop, concat, escape, getattr_, getitem, has_attr'#10);
-    Out.Add('from minijx.filters import FILTERS as _FILTERS'#10);
-    Out.Add('from minijx.tests import TESTS as _TESTS'#10);
-    Out.Add(#10'_s = str'#10#10);
+    Emit('# Generated by minijx from ' + ExtractFileName(C.Path) + '. Do not edit.'#10);
+    (* the `{# def #}` annotations are copied into the signatures; they can
+       name types this module does not import (`user: User`) *)
+    Emit('from __future__ import annotations'#10);
+    Emit('from minijx.runtime import UNDEFINED, Attrs, Loop, concat, escape, getattr_, getitem, has_attr, mconcat'#10);
+    Emit('from minijx.runtime import Markup as _M, NO_TAGS as _NO_TAGS, escape_output as _e, invalid_prop as _invalid_prop'#10);
+    Emit('from minijx.filters import FILTERS as _FILTERS, FILTERS_AE as _FILTERS_AE'#10);
+    Emit('from minijx.tests import TESTS as _TESTS'#10);
+    Emit(#10'_s = str'#10#10);
     (* bumped whenever the layout of the module changes, so a catalog can
        tell a module generated by another minijx *)
-    Out.Add('MINIJX_FORMAT = ' + IntToStr(ModuleFormat) + #10);
-    Out.Add('CSS = ' + Tuple(Css) + #10);
-    Out.Add('JS = ' + Tuple(Js) + #10);
-    Out.Add('SOURCES = ' + Tuple(Srcs) + #10#10);
+    Emit('MINIJX_FORMAT = ' + IntToStr(ModuleFormat) + #10);
+    Emit('CSS = ' + Tuple(Css) + #10);
+    Emit('JS = ' + Tuple(Js) + #10);
+    Emit('SOURCES = ' + Tuple(Srcs) + #10);
+    (* the extensions compiled with autoescape, which the catalog compares
+       with its own, and whether this module's `render` returns markup *)
+    Emit('AUTOESCAPE = ' + Tuple(FAutoescape) + #10);
+    Emit('TAGS = ' + Tuple(FTags) + #10);
+    if C.Autoescape then
+      Emit('ESCAPED = True'#10#10)
+    else
+      Emit('ESCAPED = False'#10#10);
     Counter := 0;
     for i := 0 to High(Order) do
     begin
       G := TFuncGen.Create(Order[i], @Counter);
       try
-        Out.Add(#10 + G.Generate + #10);
+        Code := G.Generate;
+        Emit(#10);
+        FuncLine := Lines + 1; (* the line of its `def` *)
+        Emit(Code + #10);
+        (* (module line, its first column or -1 for all of it, end column,
+           source index, template line, first column, end column or -1) *)
+        Funcs.Add('    ' + PyStr(Order[i].FuncName) + ': ' + PyStr(Order[i].RelPath) + ','#10);
+        M := G.Maps;
+        for k := 0 to High(M) do
+        begin
+          LineCol(Order[i].Doc.Source, M[k].SrcPos, JxLine, JxCol);
+          EndCol := -1;
+          if M[k].SrcEnd > M[k].SrcPos then
+          begin
+            LineCol(Order[i].Doc.Source, M[k].SrcEnd, EndLine, EndCol);
+            if EndLine <> JxLine then
+              EndCol := -1;
+          end;
+          LineMap.Add('    (' + IntToStr(FuncLine + M[k].Line) + ', ' +
+            IntToStr(M[k].PyCol) + ', ' + IntToStr(M[k].PyEnd) + ', ' +
+            IntToStr(i) + ', ' + IntToStr(JxLine) + ', ' + IntToStr(JxCol) + ', ' +
+            IntToStr(EndCol) + '),'#10);
+        end;
       finally
         G.Free;
       end;
     end;
-    Out.Add(#10'render = ' + C.FuncName + #10);
+    Emit(#10'render = ' + C.FuncName + #10);
+    (* for the tracebacks: see src/minijx/debug.py *)
+    Emit(#10'LINEMAP = ('#10 + LineMap.Join + ')'#10);
+    Emit('COMPONENTS = {'#10 + Funcs.Join + '}'#10);
     Result := Out.Join;
   finally
     Out.Free;
+    LineMap.Free;
+    Funcs.Free;
     Srcs.Free;
     Visited.Free;
     Css.Free;

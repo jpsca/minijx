@@ -23,21 +23,47 @@ type
     procedure Clear;
   end;
 
+  (* Where a piece of a Python line comes from in the template: bytes
+     [PyCol, PyEnd) of the line (0-based; PyCol = -1 for the whole line)
+     are the template source [SrcPos, SrcEnd) (1-based offsets). *)
+  TSrcMap = record
+    Line: Integer; (* 0-based, in the writer *)
+    PyCol, PyEnd: Integer;
+    SrcPos, SrcEnd: Integer;
+  end;
+  TSrcMapArray = array of TSrcMap;
+
+  (* A span of a line being built: Col/EndCol are relative to its text. *)
+  TSpan = record
+    Col, EndCol: Integer;
+    SrcPos, SrcEnd: Integer;
+  end;
+  TSpanArray = array of TSpan;
+
   (* Lines of Python at an indentation level. A block is generated into its
      own writer when the code around it depends on what the block needs, and
-     then appended. *)
+     then appended. Each line can say where in the template it comes from,
+     for the tracebacks. *)
   TWriter = class
   private
     FBuf: TBuf;
+    FMaps: TSrcMapArray;
+    FMapCount: Integer;
+    procedure AddMap(ALine, APyCol, APyEnd, ASrcPos, ASrcEnd: Integer);
   public
     Indent: Integer;
     constructor Create(AIndent: Integer = 0);
     destructor Destroy; override;
-    procedure Line(const S: string);
+    (* One line; SrcPos > 0: all of it comes from the template source
+       [SrcPos, SrcEnd). *)
+    procedure Line(const S: string; SrcPos: Integer = 0; SrcEnd: Integer = 0);
+    (* One line whose spans come from different places of the template. *)
+    procedure LineSpans(const S: string; const Spans: TSpanArray);
     (* another writer's lines, already indented *)
     procedure Append(W: TWriter);
     function Count: Integer;
     function Text: string;
+    function Maps: TSrcMapArray;
   end;
 
 const
@@ -122,6 +148,7 @@ constructor TWriter.Create(AIndent: Integer);
 begin
   Indent := AIndent;
   FBuf := TBuf.Create;
+  FMapCount := 0;
 end;
 
 destructor TWriter.Destroy;
@@ -130,15 +157,48 @@ begin
   inherited;
 end;
 
-procedure TWriter.Line(const S: string);
+procedure TWriter.AddMap(ALine, APyCol, APyEnd, ASrcPos, ASrcEnd: Integer);
 begin
+  if FMapCount = Length(FMaps) then
+    SetLength(FMaps, 16 + FMapCount * 2);
+  FMaps[FMapCount].Line := ALine;
+  FMaps[FMapCount].PyCol := APyCol;
+  FMaps[FMapCount].PyEnd := APyEnd;
+  FMaps[FMapCount].SrcPos := ASrcPos;
+  FMaps[FMapCount].SrcEnd := ASrcEnd;
+  Inc(FMapCount);
+end;
+
+procedure TWriter.Line(const S: string; SrcPos: Integer; SrcEnd: Integer);
+begin
+  if SrcPos > 0 then
+    AddMap(FBuf.Count, -1, -1, SrcPos, SrcEnd);
+  FBuf.Add(StrRepeat('    ', Indent) + S + #10);
+end;
+
+procedure TWriter.LineSpans(const S: string; const Spans: TSpanArray);
+var
+  i, Shift: Integer;
+begin
+  Shift := 4 * Indent;
+  for i := 0 to High(Spans) do
+    AddMap(FBuf.Count, Shift + Spans[i].Col, Shift + Spans[i].EndCol,
+      Spans[i].SrcPos, Spans[i].SrcEnd);
   FBuf.Add(StrRepeat('    ', Indent) + S + #10);
 end;
 
 procedure TWriter.Append(W: TWriter);
+var
+  i, Base: Integer;
+  M: TSrcMapArray;
 begin
-  if W.Count > 0 then
-    FBuf.Add(W.Text);
+  (* line by line, so Count stays the number of lines *)
+  Base := FBuf.Count;
+  for i := 0 to W.FBuf.Count - 1 do
+    FBuf.Add(W.FBuf.FItems[i]);
+  M := W.Maps;
+  for i := 0 to High(M) do
+    AddMap(Base + M[i].Line, M[i].PyCol, M[i].PyEnd, M[i].SrcPos, M[i].SrcEnd);
 end;
 
 function TWriter.Count: Integer;
@@ -149,6 +209,11 @@ end;
 function TWriter.Text: string;
 begin
   Result := FBuf.Join;
+end;
+
+function TWriter.Maps: TSrcMapArray;
+begin
+  Result := Copy(FMaps, 0, FMapCount);
 end;
 
 function PyStr(const S: string): string;

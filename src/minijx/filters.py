@@ -4,7 +4,8 @@ minijx runtime: Jinja's builtin filters, minus `xmlattr`, `pprint` and `urlize`.
 Every function takes the filtered value first, then the filter's arguments,
 exactly as Jinja passes them. Filters that in Jinja need the environment or
 the context are rewritten without it, and produce the same output as a
-default `jinja2.Environment` with autoescape off.
+default `jinja2.Environment`. `join` and `replace` are the only ones that
+depend on autoescape; `FILTERS_AE` has their autoescape versions.
 """
 
 import json as _json
@@ -15,7 +16,7 @@ import typing as t
 from collections import abc
 from itertools import groupby as _groupby
 
-from .runtime import UNDEFINED, escape, getattr_
+from .runtime import UNDEFINED, Markup, escape, getattr_, soft_str
 from .tests import TESTS  # tests.py imports this module only inside a function
 
 
@@ -120,11 +121,11 @@ def batch(value, linecount, fill_with=None):
 
 
 def capitalize(s):
-    return str(s).capitalize()
+    return soft_str(s).capitalize()
 
 
 def center(value, width=80):
-    return str(value).center(width)
+    return soft_str(value).center(width)
 
 
 def default(value, default_value="", boolean=False):
@@ -159,7 +160,13 @@ def dictsort(value, case_sensitive=False, by="key", reverse=False):
 
 
 e = escape
-forceescape = escape
+
+
+def forceescape(value):
+    """Escape even what is already markup."""
+    if hasattr(value, "__html__"):
+        value = value.__html__()
+    return escape(str(value))
 
 
 def filesizeformat(value, binary=False):
@@ -204,7 +211,7 @@ def float(value, default=0.0):
 def format(value, *args, **kwargs):
     if args and kwargs:
         raise TypeError("can't handle positional and keyword arguments at the same time")
-    return str(value) % (kwargs or args)
+    return soft_str(value) % (kwargs or args)
 
 
 class _GroupTuple(t.NamedTuple):
@@ -232,6 +239,9 @@ def indent(s, width=4, first=False, blank=False):
     else:
         indention = " " * width
     newline = "\n"
+    if isinstance(s, Markup):
+        indention = Markup(indention)
+        newline = Markup(newline)
     s += newline  # this quirk is necessary for splitlines method
     if blank:
         rv = (newline + indention).join(s.splitlines())
@@ -271,6 +281,23 @@ def join(value, d="", attribute=None):
     return str(d).join(str(x) for x in value)
 
 
+def join_ae(value, d="", attribute=None):
+    """`join` with autoescape, as Jinja's: when an item is markup, the
+    others and the separator are escaped and the result is markup."""
+    if attribute is not None:
+        value = map_(_make_attrgetter(attribute), value)
+    if hasattr(d, "__html__"):
+        return soft_str(d).join(map_(soft_str, value))
+    value = _builtin_list(value)
+    has_markup = False
+    for idx, item in enumerate(value):
+        if hasattr(item, "__html__"):
+            has_markup = True
+        else:
+            value[idx] = str(item)
+    return (escape(d) if has_markup else str(d)).join(value)
+
+
 def last(seq):
     try:
         return next(iter(reversed(seq)))
@@ -290,7 +317,7 @@ def list(value):
 
 
 def lower(s):
-    return str(s).lower()
+    return soft_str(s).lower()
 
 
 def _lookup(table: dict, name: str, kind: str) -> t.Callable:
@@ -414,6 +441,18 @@ def replace(s, old, new, count=None):
     return str(s).replace(str(old), str(new), count)
 
 
+def replace_ae(s, old, new, count=None):
+    """`replace` with autoescape, as Jinja's: markup in `old` or `new`
+    escapes a plain `s` first, so the result is markup."""
+    if count is None:
+        count = -1
+    if hasattr(old, "__html__") or hasattr(new, "__html__") and not hasattr(s, "__html__"):
+        s = escape(s)
+    else:
+        s = soft_str(s)
+    return s.replace(soft_str(old), soft_str(new), count)
+
+
 def reverse(value):
     if isinstance(value, str):
         return value[::-1]
@@ -438,7 +477,7 @@ def round(value, precision=0, method="common"):
 
 
 def safe(value):
-    return value
+    return Markup(value)
 
 
 def slice(value, slices, fill_with=None):
@@ -464,7 +503,7 @@ def sort(value, reverse=False, case_sensitive=False, attribute=None):
 
 
 def string(value):
-    return str(value)
+    return soft_str(value)
 
 
 def striptags(value):
@@ -497,7 +536,7 @@ _word_beginning_split_re = re.compile(r"([-\s({\[<]+)")
 
 
 def trim(value, chars=None):
-    return str(value).strip(chars)
+    return soft_str(value).strip(chars)
 
 
 def truncate(s, length=255, killwords=False, end="...", leeway=5):
@@ -522,7 +561,7 @@ def unique(value, case_sensitive=False, attribute=None):
 
 
 def upper(s):
-    return str(s).upper()
+    return soft_str(s).upper()
 
 
 def urlencode(value):
@@ -582,7 +621,7 @@ def tojson(value, indent=None):
     `{"sort_keys": True}`), and the replacements that make the result safe
     inside <script>.
     """
-    return (
+    return Markup(
         _json.dumps(value, indent=indent, sort_keys=True)
         .replace("<", "\\u003c")
         .replace(">", "\\u003e")
@@ -600,3 +639,7 @@ FILTERS["e"] = escape
 _bound = bound_to(FILTERS, TESTS)
 FILTERS.update(_bound)
 map, select, reject, selectattr, rejectattr = (_bound[name] for name in _NAMED)
+
+# What components compiled with autoescape look filters up in.
+FILTERS_AE = {**FILTERS, "join": join_ae, "replace": replace_ae}
+FILTERS_AE.update(bound_to(FILTERS_AE, TESTS))

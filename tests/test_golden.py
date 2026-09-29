@@ -190,7 +190,11 @@ def test_self_recursive_component(project):
 def test_escape_filter_only(project):
     project.write({"a.jx": "{# def s #}{{ s }} | {{ s | escape }} | {{ s | e }} | {{ s | safe }}"})
     html = project.render_mini("a.jx", s='<b class="x">&</b>')
-    assert html == '<b class="x">&</b> | &lt;b class=&#34;x&#34;&gt;&amp;&lt;/b&gt; | &lt;b class=&#34;x&#34;&gt;&amp;&lt;/b&gt; | <b class="x">&</b>'
+    escaped = "&lt;b class=&#34;x&#34;&gt;&amp;&lt;/b&gt;"
+    # without autoescape, only the filters escape; with it, `{{ s }}` too,
+    # and `escape` does not escape again
+    first = escaped if project.autoescape else '<b class="x">&</b>'
+    assert html == f'{first} | {escaped} | {escaped} | <b class="x">&</b>'
 
 
 def test_css_js_constants(project):

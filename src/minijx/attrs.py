@@ -9,6 +9,8 @@ minijx runtime: the `attrs` object, with the same rules as Jx.
 
 import typing as t
 
+from markupsafe import Markup
+
 
 CLASS_KEY = "class"
 CLASS_ALT_KEY = "classes"
@@ -16,8 +18,16 @@ CLASS_KEYS = (CLASS_KEY, CLASS_ALT_KEY)
 
 
 def quote(value: t.Any) -> str:
-    """Wrap an attribute value in quotes. Only the quote itself is escaped."""
-    text = str(value)
+    """
+    Wrap an attribute value in quotes, as Jx: `&` and `<` are escaped
+    unless the value has `__html__`, and the quote is chosen (or escaped)
+    so it cannot close the attribute.
+    """
+    if hasattr(value, "__html__"):
+        text = str(value)
+    else:
+        # `&` first, so the `&quot;` produced below is not escaped a second time.
+        text = str(value).replace("&", "&amp;").replace("<", "&lt;")
     if '"' in text:
         if "'" in text:
             text = text.replace('"', "&quot;")
@@ -146,7 +156,7 @@ class Attrs:
             return True
         return default
 
-    def render(self, **kw) -> str:
+    def render(self, **kw) -> Markup:
         attributes = self._attributes
         properties = self._properties
         classes = self._classes
@@ -178,15 +188,15 @@ class Attrs:
         elif attributes:
             items = list(attributes.items())
         elif properties:
-            return " ".join(sorted(properties))
+            return Markup(" ".join(sorted(properties)))
         else:
-            return ""
+            return Markup("")
         if len(items) > 1:
             items.sort()
         html = " ".join([f"{name}={quote(value)}" for name, value in items])
         if properties:
-            return html + " " + " ".join(sorted(properties))
-        return html
+            return Markup(html + " " + " ".join(sorted(properties)))
+        return Markup(html)
 
     def _remove(self, name: str) -> None:
         if name in CLASS_KEYS:

@@ -16,7 +16,8 @@ uses
 type
   TNodeKind = (nkText, nkOutput, nkIf, nkFor, nkSet, nkDo, nkFilter, nkSlot,
     nkFill, nkComponent,
-    nkCall,    (* {% call fn(args) %}body{% endcall %} -> fn(body, args) *)
+    nkTag,     (* {% name args %}body{% endname %} -> tags[name](args, caller=body) *)
+    nkMacro,   (* {% macro name(params) %}body{% endmacro %} -> a nested function *)
     nkComment, (* renders nothing, but separates the text around it *)
     nkRaw);    (* text from {% raw %}; never trimmed by its neighbours *)
 
@@ -36,7 +37,8 @@ type
     Text: string;          (* nkText *)
     Expr: string;          (* nkOutput, nkSet value, nkDo, nkFor header, nkFilter chain *)
     ExprPos: Integer;
-    Name: string;          (* nkSlot/nkFill name, nkComponent alias *)
+    Name: string;          (* nkSlot/nkFill name, nkComponent alias, nkTag name *)
+    Parens: Boolean;       (* nkTag: the arguments are written `name(...)` *)
     Body: TNodeList;       (* nkFor body, nkFilter, nkSlot default, nkFill, nkComponent children *)
     ElseBody: TNodeList;   (* nkFor *)
     Branches: array of TBranch; (* nkIf *)
@@ -90,9 +92,38 @@ type
     function FindImport(const Alias: string): Integer;
   end;
 
-function ParseDocument(const FileName, Src: string): TDocument;
+(* Tags: the names of the custom tags (`{% cache ... %}...{% endcache %}`),
+   or nil. *)
+function ParseDocument(const FileName, Src: string; Tags: TStrings = nil): TDocument;
+
+(* Why a name cannot be a custom tag, or '' if it can. *)
+function TagNameError(const Name: string): string;
 
 implementation
+
+const
+  (* the statements of Jinja and minijx, which a custom tag cannot shadow *)
+  ReservedTags: array[0..31] of string = ('if', 'elif', 'else', 'for', 'set',
+    'do', 'filter', 'call', 'slot', 'fill', 'raw', 'def', 'import', 'css', 'js',
+    'extends', 'include', 'macro', 'block', 'with', 'autoescape', 'from', 'trans',
+    'pluralize', 'break', 'continue', 'print', 'debug', 'namespace', 'caller',
+    'true', 'false');
+
+function TagNameError(const Name: string): string;
+var
+  i: Integer;
+begin
+  Result := '';
+  if (Name = '') or not (Name[1] in ['a'..'z', 'A'..'Z', '_']) then
+    Exit('not a valid name');
+  for i := 1 to Length(Name) do
+    if not (Name[i] in NameChars) then
+      Exit('not a valid name');
+  if InList(Name, ReservedTags) then
+    Exit('a builtin statement');
+  if StartsWith(Name, 'end') then
+    Exit('it starts with `end`, which closes a block');
+end;
 
 (* TNode *)
 
@@ -179,6 +210,8 @@ type
     FDoc: TDocument;
     FToks: TTokenArray;
     FI: Integer;
+    FTags: TStrings; (* custom tag names, or nil *)
+    function IsTag(const Name: string): Boolean;
     procedure Fail(Offset: Integer; const Msg: string);
     procedure ParseHeader(const T: TToken);
     function ParseNodes(const StopKeywords: array of string; const StopTag: string;
@@ -474,6 +507,7 @@ function TParser.ParseNodes(const StopKeywords: array of string; const StopTag: 
 var
   T: TToken;
   N: TNode;
+  i: Integer;
 begin
   Result := TNodeList.Create;
   while FI < Length(FToks) do
@@ -583,17 +617,21 @@ begin
                 CloseBlock(N, T);
                 Result.Add(N);
               end;
-            'call':
+            'macro':
               begin
                 if Trim(T.Value) = '' then
-                  Fail(T.Pos, '`{% call %}` needs something to call');
-                if StartsWith(TrimLeft(T.Value), '(') then
-                  Fail(T.ValuePos, 'minijx `{% call %}` takes no caller arguments: ' +
-                    'it calls a variable with the rendered body, like `{% filter %}`');
-                N := TNode.Create(nkCall, T.Pos);
+                  Fail(T.Pos, '`{% macro %}` needs a name and parameters: `{% macro name(a, b=1) %}`');
+                N := TNode.Create(nkMacro, T.Pos);
+                (* the name, for the generator to bind it before the code
+                   that comes first; the translator checks it *)
+                N.Name := Trim(T.Value);
+                i := 1;
+                while (i <= Length(N.Name)) and (N.Name[i] in NameChars) do
+                  Inc(i);
+                N.Name := Copy(N.Name, 1, i - 1);
                 N.Expr := T.Value;
                 N.ExprPos := T.ValuePos;
-                N.Body := ParseNodes(['endcall'], '', nil, T.Pos);
+                N.Body := ParseNodes(['endmacro'], '', nil, T.Pos);
                 CloseBlock(N, T);
                 Result.Add(N);
               end;
@@ -619,12 +657,29 @@ begin
                 N.StripAfter := False;
                 InComponent.Fills.Add(N);
               end;
-            'elif', 'else', 'endif', 'endfor', 'endfilter', 'endslot', 'endfill', 'endcall':
+            'elif', 'else', 'endif', 'endfor', 'endfilter', 'endslot', 'endfill', 'endmacro':
               Fail(T.Pos, 'Unexpected `{% ' + T.Name + ' %}`');
-            'extends', 'include', 'macro', 'block', 'with', 'autoescape', 'endraw', 'endset', 'endmacro', 'endblock', 'endwith', 'endautoescape':
+            'extends', 'include', 'call', 'endcall', 'block', 'with', 'autoescape', 'endraw', 'endset', 'endblock', 'endwith', 'endautoescape':
               Fail(T.Pos, '`{% ' + T.Name + ' %}` is not supported by minijx');
           else
-            Fail(T.Pos, 'Unknown statement `{% ' + T.Name + ' %}`');
+            if IsTag(T.Name) then
+            begin
+              N := TNode.Create(nkTag, T.Pos);
+              N.Name := T.Name;
+              N.Expr := T.Value;
+              N.ExprPos := T.ValuePos;
+              (* `{% cache(a, b) %}` is a call; `{% cache (a, b) %}`, with a
+                 space, one argument, a tuple, as in Jinja *)
+              N.Parens := (T.Value <> '') and (T.Value[1] = '(') and
+                (FDoc.Source[T.ValuePos - 1] in NameChars);
+              N.Body := ParseNodes(['end' + T.Name], '', nil, T.Pos);
+              CloseBlock(N, T);
+              Result.Add(N);
+            end
+            else if StartsWith(T.Name, 'end') and IsTag(Copy(T.Name, 4, MaxInt)) then
+              Fail(T.Pos, 'Unexpected `{% ' + T.Name + ' %}`')
+            else
+              Fail(T.Pos, 'Unknown statement `{% ' + T.Name + ' %}`');
           end;
         end;
     end;
@@ -633,6 +688,11 @@ begin
     Fail(InComponent.Pos, 'Unclosed `<' + StopTag + '>`');
   if Length(StopKeywords) > 0 then
     Fail(OpenPos, 'Unclosed block: expected `{% ' + StopKeywords[High(StopKeywords)] + ' %}` before the end of the file');
+end;
+
+function TParser.IsTag(const Name: string): Boolean;
+begin
+  Result := (FTags <> nil) and (FTags.IndexOf(Name) >= 0);
 end;
 
 function TParser.Run(const FileName, Src: string): TDocument;
@@ -648,11 +708,12 @@ begin
   Result := FDoc;
 end;
 
-function ParseDocument(const FileName, Src: string): TDocument;
+function ParseDocument(const FileName, Src: string; Tags: TStrings = nil): TDocument;
 var
   P: TParser;
 begin
   P := TParser.Create;
+  P.FTags := Tags;
   try
     Result := P.Run(FileName, Src);
   finally

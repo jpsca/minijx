@@ -28,7 +28,7 @@ COMPONENTS = {
   <Item v={{ w }} i={{ loop.index }} data-n={{ n }}>{% fill extra %}({{ loop.revindex }}){% endfill %}</Item>
 {%- else %}<li>none</li>{% endfor %}
 </ul>
-{% call wrap %}{{ words | map("shout") | join(",") }}{% endcall %}""",
+{% wrap %}{{ words | map("shout") | join(",") }}{% endwrap %}""",
 }
 
 
@@ -42,7 +42,7 @@ def make_catalog(folder, **kwargs):
         folder,
         filters={"shout": lambda s: str(s).upper() + "!"},
         tests={"short": lambda s, n: len(s) <= n},
-        wrap=lambda body: f"[{body}]",
+        tags={"wrap": lambda *, caller, template: f"[{caller()}]"},
         **kwargs,
     )
 

@@ -29,12 +29,16 @@ type
   TComponent = class
   public
     Path: string;     (* absolute *)
+    RelPath: string;  (* relative to its root, with `/`: how the catalog names it *)
     RootIdx: Integer; (* the root it was resolved from *)
     FuncName: string; (* the Python function it becomes *)
     Doc: TDocument;
     Deps: array of TDep;
     Args: TArgArray;
     UsesAttrs: Boolean;
+    (* its `{{ }}` escape what they render: its extension is one of the
+       autoescape ones *)
+    Autoescape: Boolean;
     destructor Destroy; override;
     function FindDep(const Alias: string): TComponent;
   end;

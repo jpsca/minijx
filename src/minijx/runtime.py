@@ -7,6 +7,24 @@ generated modules only need `from minijx.runtime import ...`.
 
 import typing as t
 
+from markupsafe import Markup
+from markupsafe import escape as _ms_escape
+
+
+# markupsafe's own escaping loop, which returns a plain `str` (its public
+# `escape` wraps the result in `Markup`, which costs more than the escaping).
+# It is private, so there is a fallback; tests/test_runtime.py checks that
+# the fast one is found.
+try:
+    from markupsafe._speedups import _escape_inner
+except ImportError:  # pragma: no cover
+    try:
+        from markupsafe._native import _escape_inner
+    except ImportError:
+
+        def _escape_inner(s: str, /) -> str:
+            return str(_ms_escape(s))
+
 
 _MISSING = object()
 
@@ -32,26 +50,54 @@ class _Undefined:
 UNDEFINED = _Undefined()
 
 
-def escape(value: t.Any) -> str:
+def escape(value: t.Any) -> Markup:
     """
-    Same table as `markupsafe.escape`, returning a plain `str`.
+    The `escape` (`e`) filter: `markupsafe.escape`. Objects with `__html__`
+    are kept as they are, and the result is `Markup`, so escaping twice
+    does nothing.
+    """
+    return _ms_escape(value)
 
-    Objects with `__html__` are returned as-is, like Jinja does for Markup.
+
+def escape_output(value: t.Any, _str=str, _int=int, _escape_inner=_escape_inner) -> str:
     """
-    if hasattr(value, "__html__"):
-        return value.__html__()
-    return (
-        str(value)
-        .replace("&", "&amp;")
-        .replace(">", "&gt;")
-        .replace("<", "&lt;")
-        .replace("'", "&#39;")
-        .replace('"', "&#34;")
-    )
+    What a `{{ }}` renders in a component compiled with autoescape: the
+    value escaped, as a plain `str`, unless it has `__html__`.
+
+    It returns `str` instead of `Markup` because building a `Markup` costs
+    more than escaping a short string. `str` and `int`, by far the most
+    common values, skip the attribute lookup.
+    """
+    t_ = type(value)
+    if t_ is _str:
+        return _escape_inner(value)
+    if t_ is _int:
+        return _str(value)
+    html = getattr(value, "__html__", None)
+    if html is not None:
+        return html()
+    return _escape_inner(_str(value))
+
+
+def soft_str(value: t.Any) -> str:
+    """`str()` that keeps a `str` subclass (`Markup`) as it is, as Jinja's."""
+    return value if isinstance(value, str) else str(value)
 
 
 def concat(*parts: t.Any) -> str:
     """`a ~ b ~ c`: string concatenation with str() applied to each side."""
+    return "".join([str(p) for p in parts])
+
+
+def mconcat(*parts: t.Any) -> str:
+    """
+    `a ~ b ~ c` with autoescape, as Jinja's `markup_join`: when a part has
+    `__html__`, the result is `Markup` and the other parts are escaped;
+    otherwise it is a plain `str`, escaped later when it is rendered.
+    """
+    for part in parts:
+        if hasattr(part, "__html__"):
+            return Markup("").join([soft_str(p) for p in parts])
     return "".join([str(p) for p in parts])
 
 
@@ -120,8 +166,40 @@ def has_attr(obj: t.Any, name: t.Any) -> bool:
     return getattr_(obj, name, _ABSENT) is not _ABSENT
 
 
+class InvalidPropType(TypeError):
+    """A component argument annotated with a builtin type (`{# def title: str #}`)
+    got a value of another type. Same message as Jx's."""
+
+
+def invalid_prop(component: str, arg: str, expected: type, value: t.Any) -> t.NoReturn:
+    raise InvalidPropType(
+        f"{component}: `{arg}` expected {expected.__name__}, got {type(value).__name__}"
+    )
+
+
+class _NoTags:
+    """
+    What the code of a custom tag finds when the catalog has no function for
+    it: the module was compiled with `--tags`, but rendered without them.
+    """
+
+    __slots__ = ()
+
+    def __getitem__(self, name: str) -> t.NoReturn:
+        raise KeyError(
+            f"No function for the tag {{% {name} %}}: pass it to the Catalog, "
+            f"`Catalog(..., tags={{{name!r}: function}})`"
+        )
+
+
+NO_TAGS = _NoTags()
+
+
 from .attrs import Attrs  # noqa: E402
 from .loop import Loop  # noqa: E402
 
 
-__all__ = ["UNDEFINED", "Attrs", "Loop", "escape", "concat", "getattr_", "getitem", "has_attr"]
+__all__ = [
+    "NO_TAGS", "UNDEFINED", "InvalidPropType", "invalid_prop", "Attrs", "Loop", "Markup", "concat", "escape", "escape_output", "getattr_",
+    "getitem", "has_attr", "mconcat", "soft_str",
+]

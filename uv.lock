@@ -143,6 +143,9 @@ wheels = [
 name = "minijx"
 version = "0.1.0rc1"
 source = { editable = "." }
+dependencies = [
+    { name = "markupsafe" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -158,6 +161,7 @@ test = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "markupsafe", specifier = ">=3.0,<4" }]
 
 [package.metadata.requires-dev]
 dev = [

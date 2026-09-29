@@ -1,6 +1,5 @@
 """
-Custom filters and tests passed to the catalog (compared with Jx), and the
-`{% call %}` block.
+Custom filters and tests passed to the catalog (compared with Jx).
 """
 
 import pytest
@@ -99,64 +98,3 @@ def test_inline_tests_cannot_be_replaced(tmp_path):
 def test_filters_must_be_callable(tmp_path):
     with pytest.raises(TypeError, match="'shout' is not callable"):
         Catalog(tmp_path, filters={"shout": "nope"})
-
-
-# {% call %}
-
-
-class Obj:
-    prefix = ">"
-
-    def quote(self, body, n=1):
-        return self.prefix * n + body
-
-
-def call_render(project, source, **kwargs):
-    project.write({"page.jx": source})
-    return project.render_mini("page.jx", **kwargs)
-
-
-def test_call_with_a_global_callable(project):
-    html = call_render(project, "{% call wrap %}hi {{ 1 + 1 }}{% endcall %}", globals={"wrap": wrap})
-    assert html == "[hi 2]"
-
-
-def test_call_passes_the_body_first(project):
-    html = call_render(
-        project, '{% call wrap("(", right=")") %}body{% endcall %}', globals={"wrap": wrap}
-    )
-    assert html == "(body)"
-
-
-def test_call_a_method_and_a_local(project):
-    source = """{# def obj, fn #}{% call obj.quote(n=2) %}a{% endcall %}|{% call fn %}b{% endcall %}|{% set f = fn %}{% call f() %}c{% endcall %}"""
-    html = call_render(project, source, obj=Obj(), fn=str.upper)
-    assert html == ">>a|B|C"
-
-
-def test_call_nested_in_loops_and_components(project):
-    project.write({
-        "box.jx": "<div>{{ content }}</div>",
-        "page.jx": """{# import "box.jx" as Box #}
-{%- for i in [1, 2] -%}
-{% call wrap %}{% call wrap("<", ">") %}{{ i }}{% endcall %}<Box>{{ loop.index }}</Box>{% endcall %}
-{%- endfor %}""",
-    })
-    html = project.render_mini("page.jx", globals={"wrap": wrap})
-    assert html == "[<1><div>1</div>][<2><div>2</div>]"
-
-
-def test_call_whitespace_markers(project):
-    html = call_render(project, "a  {%- call wrap -%}  x  {%- endcall -%}  b", globals={"wrap": wrap})
-    assert html == "a[x]b"
-
-
-def test_call_result_is_turned_into_text(project):
-    html = call_render(project, "{% call len %}abcd{% endcall %}|{% call fn %}x{% endcall %}", globals={"fn": lambda s: None})
-    assert html == "4|None"
-
-
-def test_call_uses_custom_filters_inside(project):
-    project.write({"page.jx": '{% call wrap %}{{ "a" | shout }}{% endcall %}'})
-    html = project.render_mini("page.jx", globals={"wrap": wrap}, filters=FILTERS)
-    assert html == "[A!]"

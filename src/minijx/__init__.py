@@ -41,9 +41,16 @@ from .catalog import (  # noqa: E402
     ComponentNotFoundError,
 )
 from .loop import Loop  # noqa: E402
-from .runtime import concat, escape, getattr_, getitem, has_attr  # noqa: E402
+from .runtime import (  # noqa: E402
+    InvalidPropType,
+    concat,
+    escape,
+    getattr_,
+    getitem,
+    has_attr,
+)
 
 
 __all__ = [
     "Catalog", "Component", "ComponentNotCompiledError", "ComponentNotFoundError", "CompileError",
-    "Attrs", "Loop", "concat", "escape", "getattr_", "getitem", "has_attr"]
+    "Attrs", "InvalidPropType", "Loop", "concat", "escape", "getattr_", "getitem", "has_attr"]

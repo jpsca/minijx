@@ -7,12 +7,15 @@ Benchmark: render the example app's pages with minijx and with Jx.
 Both catalogs read the same `.jx` files in `example/components/`, with the
 same arguments and globals the app uses.
 
-Jx is measured in two configurations:
+Each engine is measured in two configurations:
 
-- "jx": its defaults, autoescape on and StrictUndefined. This is what a Jx
-  app runs, but its output is escaped and minijx's is not.
-- "jx noesc": autoescape off, StrictUndefined kept. Byte for byte the same
-  output as minijx, which is checked before timing.
+- "minijx" and "jx": their defaults, autoescape on (StrictUndefined in Jx).
+  This is what an app runs.
+- "minijx noesc" and "jx noesc": autoescape off. minijx compiles a copy of
+  the components for it, since its modules are written next to the `.jx`.
+
+Before timing, each minijx configuration is checked to produce byte for
+byte the same output as the Jx one.
 
 Reported per page:
 
@@ -25,9 +28,11 @@ Reported per page:
 import argparse
 import copy
 import re
+import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -40,7 +45,9 @@ sys.path.insert(0, str(EXAMPLE))
 import app as demo  # noqa: E402  the example app: its data, routes and catalog setup
 import jinja2  # noqa: E402
 from jx import Catalog as JxCatalog  # noqa: E402
+
 from minijx import Catalog as MiniCatalog  # noqa: E402
+from minijx import CompileError  # noqa: E402
 
 
 PAGES = ["/", "/users", "/users?q=a&sort=age", "/users/1", "/tree", "/filters", "/sitemap.xml", "/nope"]
@@ -63,8 +70,8 @@ def catalog_globals() -> dict:
     return {"site_name": "minijx demo", "nav": demo.catalog.globals["nav"]}
 
 
-def make_mini(auto_reload: bool) -> MiniCatalog:
-    return MiniCatalog(demo.COMPONENTS, auto_reload=auto_reload, **catalog_globals())
+def make_mini(auto_reload: bool, folder: Path = demo.COMPONENTS, autoescape: bool = True) -> MiniCatalog:
+    return MiniCatalog(folder, auto_reload=auto_reload, autoescape=autoescape, **catalog_globals())
 
 
 def make_jx(auto_reload: bool, autoescape: bool) -> JxCatalog:
@@ -134,26 +141,37 @@ def main() -> None:
     opts = parser.parse_args()
 
     compile_ms = compile_all_ms()
+    noesc = Path(tempfile.mkdtemp()) / "components"
+    shutil.copytree(demo.COMPONENTS, noesc, ignore=shutil.ignore_patterns("*.py", "__pycache__"))
+    try:
+        make_mini(False, noesc, autoescape=False).compile()
+    except CompileError:
+        pass  # pages/broken.jx is broken on purpose; the rest is compiled
     engines = {
         "minijx": lambda: make_mini(opts.reload),
-        "jx noesc": lambda: make_jx(opts.reload, autoescape=False),
         "jx": lambda: make_jx(opts.reload, autoescape=True),
+        "minijx noesc": lambda: make_mini(opts.reload, noesc, autoescape=False),
+        "jx noesc": lambda: make_jx(opts.reload, autoescape=False),
     }
     catalogs = {name: factory() for name, factory in engines.items()}
 
-    # Same work: minijx and Jx without autoescape must produce the same HTML.
+    # Same work: each minijx configuration must produce the same HTML as Jx's.
     for page in PAGES:
-        mini = render(catalogs["minijx"], page)
-        jx = str(render(catalogs["jx noesc"], page))
-        if mini != jx:
-            i = next(i for i, (a, b) in enumerate(zip(mini, jx)) if a != b)
-            sys.exit(f"Different output for {page} at {i}:\n  minijx: {mini[i-60:i+60]!r}\n  jx:     {jx[i-60:i+60]!r}")
+        for mini_name, jx_name in (("minijx", "jx"), ("minijx noesc", "jx noesc")):
+            mini = str(render(catalogs[mini_name], page))
+            jx = str(render(catalogs[jx_name], page))
+            if mini != jx:
+                i = next(i for i, (a, b) in enumerate(zip(mini, jx)) if a != b)
+                sys.exit(
+                    f"Different output for {page} ({mini_name} vs {jx_name}) at {i}:\n"
+                    f"  minijx: {mini[i-60:i+60]!r}\n  jx:     {jx[i-60:i+60]!r}"
+                )
 
     mode = "auto_reload on" if opts.reload else "auto_reload off"
     print(f"Python {sys.version.split()[0]} · jinja2 {jinja2.__version__} · {mode}")
     print(f"minijx compile of all components: {compile_ms:.1f} ms (whole folder, one process)\n")
 
-    header = f"{'page':<22}" + "".join(f"{name + ' µs':>13}" for name in engines) + f"{'vs jx':>9}{'vs noesc':>10}"
+    header = f"{'page':<22}" + "".join(f"{name + ' µs':>16}" for name in engines) + f"{'esc':>7}{'noesc':>7}"
     print("Warm render, median")
     print(header)
     print("-" * len(header))
@@ -164,22 +182,22 @@ def main() -> None:
             totals[name] += v
         print(
             f"{page:<22}"
-            + "".join(f"{times[n]:>13.1f}" for n in engines)
-            + f"{times['jx'] / times['minijx']:>8.1f}x{times['jx noesc'] / times['minijx']:>9.1f}x"
+            + "".join(f"{times[n]:>16.1f}" for n in engines)
+            + f"{times['jx'] / times['minijx']:>6.1f}x{times['jx noesc'] / times['minijx noesc']:>6.1f}x"
         )
     print("-" * len(header))
     print(
         f"{'all pages':<22}"
-        + "".join(f"{totals[n]:>13.1f}" for n in engines)
-        + f"{totals['jx'] / totals['minijx']:>8.1f}x{totals['jx noesc'] / totals['minijx']:>9.1f}x"
+        + "".join(f"{totals[n]:>16.1f}" for n in engines)
+        + f"{totals['jx'] / totals['minijx']:>6.1f}x{totals['jx noesc'] / totals['minijx noesc']:>6.1f}x"
     )
 
     print("\nCold first render (new catalog), median ms")
-    header = f"{'page':<22}" + "".join(f"{name + ' ms':>13}" for name in engines)
+    header = f"{'page':<22}" + "".join(f"{name + ' ms':>16}" for name in engines)
     print(header)
     print("-" * len(header))
     for page in PAGES:
-        print(f"{page:<22}" + "".join(f"{cold_ms(f, page):>13.2f}" for f in engines.values()))
+        print(f"{page:<22}" + "".join(f"{cold_ms(f, page):>16.2f}" for f in engines.values()))
 
 
 if __name__ == "__main__":

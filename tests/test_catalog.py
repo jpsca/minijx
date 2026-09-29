@@ -320,7 +320,9 @@ def test_compiler_args_are_the_folders_in_order(tmp_path):
     b.mkdir()
     catalog = Catalog(b)
     catalog.add_folder(a)
-    assert catalog.compiler_args() == [str(b.resolve()), str(a.resolve())]
+    assert catalog.compiler_args() == [
+        "--autoescape=html,jx,xml", "--tags=", str(b.resolve()), str(a.resolve()),
+    ]
 
 
 def test_module_from_another_minijx_version_is_stale(tmp_path):
@@ -332,5 +334,6 @@ def test_module_from_another_minijx_version_is_stale(tmp_path):
     )
     os.utime(tmp_path / "a.py", (2e9, 2e9))  # newer than a.jx
     with pytest.raises(ComponentNotCompiledError, match="different version"):
-        Catalog(tmp_path, auto_reload=False).render("a.jx")
-    assert Catalog(tmp_path, compiler=BIN).render("a.jx") == "new"
+        Catalog(tmp_path, compiler=False, auto_reload=False).render("a.jx")
+    # checked when first loaded, in any mode: compiled again
+    assert Catalog(tmp_path, compiler=BIN, auto_reload=False).render("a.jx") == "new"

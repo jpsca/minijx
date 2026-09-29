@@ -42,10 +42,14 @@ def load_module(py_path: Path):
 
 
 class Project:
-    """A folder of .jx files compiled by minijx, and a copy of it rendered by Jx."""
+    """
+    A folder of .jx files compiled by minijx, and a copy of it rendered by Jx,
+    both with autoescape or both without it.
+    """
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, autoescape: bool = False):
         self.root = root
+        self.autoescape = autoescape
         self.mini = root / "mini"
         self.jx = root / "jx"
         self.mini.mkdir()
@@ -62,7 +66,9 @@ class Project:
         return self
 
     def compile(self) -> subprocess.CompletedProcess:
-        return run_minijx(self.mini)
+        if self.autoescape:
+            return run_minijx(self.mini)  # the default: html, jx, xml
+        return run_minijx("--autoescape=", self.mini)
 
     def render_mini(self, template: str, globals=None, filters=None, tests=None, **kwargs) -> str:
         result = self.compile()
@@ -70,7 +76,9 @@ class Project:
         if filters or tests:
             from minijx import Catalog
 
-            catalog = Catalog(self.mini, compiler=False, filters=filters, tests=tests)
+            catalog = Catalog(
+                self.mini, compiler=False, filters=filters, tests=tests, autoescape=self.autoescape
+            )
             return catalog.render(template, globals=globals, **kwargs)
         mod = load_module(self.mini / (template[:-3] + ".py"))
         return mod.render(_globals=globals, **kwargs)
@@ -81,7 +89,7 @@ class Project:
 
         catalog = Catalog(
             self.jx,
-            jinja_env=jinja2.Environment(autoescape=False),
+            jinja_env=jinja2.Environment(autoescape=self.autoescape),
             filters=filters,
             tests=tests,
         )
@@ -100,6 +108,7 @@ class Project:
         return mini
 
 
-@pytest.fixture
-def project(tmp_path) -> Project:
-    return Project(tmp_path)
+@pytest.fixture(params=[False, True], ids=["plain", "autoescape"])
+def project(tmp_path, request) -> Project:
+    """Every golden test runs twice: without autoescape and with it."""
+    return Project(tmp_path, autoescape=request.param)
