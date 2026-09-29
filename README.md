@@ -6,14 +6,17 @@
 
 MiniJx is a template engine that precompiles [Jx](https://github.com/jpsca/jx) components into plain Python functions before rendering them. It render pages about 3x faster than regular Jx and does not requires Jx nor Jinja to run; its only dependency is [MarkupSafe](https://markupsafe.palletsprojects.com/).
 
-It can be used as a drop-in for existing Jx templates since it supports almost all of Jinja syntax except for macros, template inheritance, and, most notably, Jinja extensions. However, you can define any global variable to be treated as a tag (see [Custom tags](#custom-tags)).
+It can be used as a drop-in for existing Jx templates since it supports almost all of Jinja syntax except for some expressions, template inheritance, and, most notably, Jinja extensions. However, you can define any global variable to be treated as a tag (see [Custom tags](#custom-tags)).
 
 The compiler it's implemented in [FreePascal](https://www.freepascal.org/) and can be used as a regular Python library and as a command line utility.
 
 The wheel includes the compiler binary, so FreePascal is not needed to use it. Wheels are built for Linux (x86_64, aarch64; glibc and musl) and macOS (arm64, x86_64). It is tested on Python 3.13, 3.14 and free-threaded 3.14t: the runtime itself has no C extensions (MarkupSafe's are optional), and one catalog can render from many threads at once.
 
 ```
-minijx [--autoescape=html,jx,xml] [--tags=cache,...] [--output=build/] components/ [more/folders/]
+minijx
+  [--autoescape=html,jx,xml]
+  [--tags=cache,...]
+  [--output=build/] components/ [more/folders/]
 minijx --version
 ```
 
@@ -200,13 +203,13 @@ As in Jx, a `{{ }}` escapes what it renders, unless the value has `__html__` (a 
 
 Autoescape is decided per component, by the extension before `.jx`, or `jx` if there is none:
 
-| file | extension | escaped with the default list |
-|---|---|---|
-| `card.jx` | `jx` | yes |
-| `pages/home.html.jx` | `html` | yes |
-| `sitemap.xml.jx` | `xml` | yes |
-| `emails/welcome.txt.jx` | `txt` | no |
-| `data.json.jx` | `json` | no |
+| file                    | extension | escaped by default |
+|-------------------------|-----------|--------------------|
+| `card.jx`               | `jx`      | yes                |
+| `pages/home.html.jx`    | `html`    | yes                |
+| `sitemap.xml.jx`        | `xml`     | yes                |
+| `emails/welcome.txt.jx` | `txt`     | no                 |
+| `data.json.jx`          | `json`    | no                 |
 
 ```python
 catalog = Catalog("components/")                       # html, jx, xml
@@ -247,7 +250,6 @@ This works because each module has a `LINEMAP`, where each of its lines comes fr
 
 - **Strict names.** A name that is not an argument, a `set` variable, a loop variable, `content`, `attrs`, `loop` or a Python builtin compiles to `_globals["name"]`. A missing global raises `KeyError`. `x is defined` and `x | default(...)` are the exceptions: they compile to a safe lookup.
 - **Attribute access** `a.b` tries `getattr` then `getitem`, like Jinja. `a["b"]` tries the reverse. A miss raises `AttributeError`.
-- **Scoping.** A `set` inside a `for`, a fill, a macro or the body of a custom tag is not visible after it, as in Jinja. Before the `set`, the body sees the outer value.
 - **Arguments are keyword-only.** Builtin types are checked as in Jx (see above); other annotations are only copied into the signature.
 - The `CSS` and `JS` module constants list the assets of the component and of everything it imports, in Jx's order: the component's own first, then each import's.
 - `MINIJX_FORMAT` marks the module layout; the catalog treats a module from another minijx version as stale.
@@ -257,7 +259,7 @@ This works because each module has a `LINEMAP`, where each of its lines comes fr
 ## Example app
 
 ```
-make example      # http://127.0.0.1:8000, PORT=... to change it
+make example  # http://127.0.0.1:8000, PORT=... to change it
 ```
 
 A small site in `example/` built only with the standard library. It shows layouts with slots, `attrs`, loops with `loop`, recursive loops, filters, globals, a `sitemap.xml.jx`, and a component broken on purpose at `/broken`. The app compiles everything at startup with `catalog.compile()`. Edit any `.jx` in `example/components/` and reload the page: the catalog recompiles it. Render times go to the console and to the `Server-Timing` header.
@@ -265,7 +267,7 @@ A small site in `example/` built only with the standard library. It shows layout
 ## Benchmark
 
 ```
-make bench        # or: PYTHONPATH=src ../jx/.venv/bin/python bench/bench_example.py [--reload]
+make bench  # or: PYTHONPATH=src ../jx/.venv/bin/python bench/bench_example.py [--reload]
 ```
 
 Renders every page of the example app with minijx and with Jx, from the same `.jx` files and data. Each engine runs with autoescape on and off; before timing, it checks that minijx produces the same HTML as Jx in each mode. It reports the median warm render time per page, the first render with a new catalog, and the time to compile every component with the binary.
@@ -288,9 +290,9 @@ Errors are printed as `file:line:col: message` on stderr and the exit code is 1.
 ## Development
 
 ```
-make build        # needs fpc 3.2+; writes build/minijx and copies it into src/minijx/bin/
-make test         # pytest: golden tests against Jx, filters/tests against jinja2
-make dist         # the wheel for this platform and the sdist, in dist/
+make build  # needs fpc 3.2+; writes build/minijx and copies it into src/minijx/bin/
+make test   # pytest: golden tests against Jx, filters/tests against jinja2
+make dist   # the wheel for this platform and the sdist, in dist/
 ```
 
 `make test` uses `../jx/.venv/bin/python`, a Python with `jx`, `jinja2` and `pytest`. `make test JX_PYTHON="uv run --group test python"` uses the test dependencies from `pyproject.toml` instead, with Jx from PyPI.
